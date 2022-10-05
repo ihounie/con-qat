@@ -1,5 +1,5 @@
 #!/bin/bash
-for bit_width in 32 8 4
+for bit_width in 32 8 4 2
 do
 {
     curr_dir="."

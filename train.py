@@ -114,11 +114,11 @@ def main():
         train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, True,
                                                        optimizer, sum_writer)
         if args.wandb_log:
-            wandb.log({"train_loss": train_loss,"train_acc":train_prec1, "epoch":epoch })
+            wandb.log({"train_loss": train_loss[-1],"train_acc":train_prec1[-1], "epoch":epoch })
         model.eval()
         val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, False)
         if args.wandb_log:
-            wandb.log({"test_loss": val_loss,"test_acc":val_prec1, "epoch":epoch })
+            wandb.log({"test_loss": val_loss[-1],"test_acc":val_prec1[-1], "epoch":epoch })
 
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
