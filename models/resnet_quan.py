@@ -101,6 +101,26 @@ class PreActResNet(nn.Module):
         out = out.mean(dim=2).mean(dim=2)
         out = self.fc(out)
         return out
+    
+    def get_activations(self, x):
+        out = self.conv0(x)
+        act = [out]
+        for layer in self.layers:
+            out = layer(out)
+            act.append(out)
+        out = self.bn(out)
+        act.append(out)
+        out = out.mean(dim=2).mean(dim=2)
+        act.append(out)
+        out = self.fc(out)
+        act.append(out)
+        return act
+    
+    def get_num_layers(self):
+        num_layers = 4 # conv0, bn, pooling, fc
+        for layer in self.layers:#conv layers
+            num_layers +=1
+        return num_layers
 
 
 class PreActBottleneckQ(nn.Module):

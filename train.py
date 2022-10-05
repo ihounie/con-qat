@@ -153,6 +153,14 @@ def main():
                 sum_writer.add_scalar('val_loss_{}'.format(bw), vl, global_step=epoch)
                 sum_writer.add_scalar('val_prec_1_{}'.format(bw), vp1, global_step=epoch)
                 sum_writer.add_scalar('val_prec_5_{}'.format(bw), vp5, global_step=epoch)
+        if args.wandb_log:
+            for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
+                                                      val_prec1, val_prec5):
+                wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
+                wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
+                wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
+                wandb.log({f'test_acc_{bw}':vp1, "epoch":epoch})
+
         logging.info('Epoch {}: \ntrain loss {:.2f}, train prec1 {:.2f}, train prec5 {:.2f}\n'
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
