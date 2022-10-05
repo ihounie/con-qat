@@ -44,8 +44,9 @@ args = parser.parse_args()
 
 
 def main():
-    wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
-    wandb.config.update(args)
+    if args.wandb_log:
+        wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
+        wandb.config.update(args)
     hostname = socket.gethostname()
     setup_logging(os.path.join(args.results_dir, 'log_{}.txt'.format(hostname)))
     logging.info("running arguments: %s", args)
