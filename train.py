@@ -39,6 +39,7 @@ parser.add_argument('--print-freq', '-p', default=20, type=int, help='print freq
 parser.add_argument('--pretrain', default=None, help='path to pretrained full-precision checkpoint')
 parser.add_argument('--resume', default=None, help='path to latest checkpoint')
 parser.add_argument('--bit_width_list', default='4', help='bit width list')
+parser.add_argument('--wandb_log',  action='store_true')
 args = parser.parse_args()
 
 
@@ -112,11 +113,11 @@ def main():
         model.train()
         train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, True,
                                                        optimizer, sum_writer)
-        if wandb_log:
+        if args.wandb_log:
             wandb.log({"train_loss": train_loss,"train_acc":train_prec1, "epoch":epoch })
         model.eval()
         val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, False)
-        if wandb_log:
+        if args.wandb_log:
             wandb.log({"test_loss": val_loss,"test_acc":val_prec1, "epoch":epoch })
 
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):

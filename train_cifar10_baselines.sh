@@ -20,6 +20,7 @@ do
         --optimizer adam \
         --weight-decay 0.0 \
         --results-dir $result_dir \
-        --bit_width_list "${bit_width}"
+        --bit_width_list "${bit_width}"\
+        --wandb_log
 }
 done
