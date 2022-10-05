@@ -100,12 +100,12 @@ def eval_constraint(data_loader, model, criterion, bitwidth=4):
     with torch.no_grad():
         for i, (input, target) in enumerate(data_loader):
             input = input.cuda()
-            model.apply(lambda m: setattr(m, 'wbit', 32))
-            model.apply(lambda m: setattr(m, 'abit', 32))
-            act_full = model.get_activations(input)
             model.apply(lambda m: setattr(m, 'wbit', bitwidth))
             model.apply(lambda m: setattr(m, 'abit', bitwidth))
             act_q = model.get_activations(input)
+            model.apply(lambda m: setattr(m, 'wbit', 32))
+            model.apply(lambda m: setattr(m, 'abit', 32))
+            act_full = model.eval_layers(input, act_q)
             # This will be vectorised
             for l, (full, q) in enumerate(zip(act_full, act_q)):
                 dist = criterion(full, q)

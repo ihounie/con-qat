@@ -116,6 +116,19 @@ class PreActResNet(nn.Module):
         act.append(out)
         return act
     
+    def eval_layers(self,input, activations):
+        # this should be parallelised
+        out = [self.conv0(input)]
+        for idx, layer in enumerate(self.layers):
+            out.append(layer(activations[idx]))
+        idx+=1
+        out.append(self.bn(activations[idx]))
+        idx+=1
+        out.append(activations[idx].mean(dim=2).mean(dim=2))
+        idx+=1
+        out.append(self.fc(activations[idx]))
+        return out
+    
     def get_num_layers(self):
         num_layers = 4 # conv0, bn, pooling, fc
         for layer in self.layers:#conv layers
