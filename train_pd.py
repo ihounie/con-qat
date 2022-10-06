@@ -34,7 +34,7 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
 parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
 parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
-parser.add_argument('--lr_dual', default=0.5, type=float, help='dual learning rate')
+parser.add_argument('--lr_dual', default=0.1, type=float, help='dual learning rate')
 parser.add_argument('--lr_decay', default='100,150,180', help='lr decay steps')
 parser.add_argument('--weight-decay', default=3e-4, type=float, help='weight decay')
 parser.add_argument('--print-freq', '-p', default=20, type=int, help='print frequency')
@@ -262,7 +262,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                                 const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                             else:
                                 const = const_vec
-                            slacks[l] += torch.sum(const)-epsilon[bitwidth]
+                            slacks[l] += torch.sum(const-epsilon[bitwidth])
                 slacks = slacks/len(data_loader.dataset)
                 lambdas = torch.nn.functional.relu(lambdas + args.lr_dual*slacks)
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], lambdas
