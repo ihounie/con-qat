@@ -203,7 +203,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                 slacks = torch.zeros_like(lambdas)
                 # This will be vectorised
                 for l, (full, q) in enumerate(zip(act_full, act_q)):
-                    slacks[l] = torch.nn.functional.mse_loss(full, q) - epsilon[bitwidth]
+                    slacks[l] = torch.nn.functional.l1_loss(full, q) - epsilon[bitwidth]
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
             optimizer.step()
@@ -246,7 +246,10 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                     act_full = model.eval_layers(input, act_q)
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
-                        slacks[l] += torch.nn.functional.l1_loss(full, q) - epsilon[bitwidth]
+                        const_vec = torch.nn.functional.l1_loss(full, q, reduce='none')
+                        # mean across all dimensions but battch dimension
+                        const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                        slacks[l] += const-epsilon[bitwidth]
                 slacks = slacks/len(data_loader.dataset)
                 lambdas = torch.nn.functional.relu(lambdas+args.lr_dual*slacks)
         
