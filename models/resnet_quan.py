@@ -130,12 +130,18 @@ class PreActResNet(nn.Module):
         return out
     
     def get_num_layers(self):
-        num_layers = 4 # conv0, bn, pooling, fc
+        num_layers = 1 # conv0
         for layer in self.layers:#conv layers
             num_layers +=1
+        num_layers += 3 # bn, pooling, fc
         return num_layers
 
-
+    def get_bn_layers(self):
+        num_layers = 1 # conv0
+        for layer in self.layers:#conv layers
+            num_layers +=1
+        return [num_layers]
+        
 class PreActBottleneckQ(nn.Module):
     expansion = 4
 

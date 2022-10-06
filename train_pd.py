@@ -173,14 +173,14 @@ def main():
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-
-def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimizer=None, sum_writer=None):
+def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimizer=None, sum_writer=None, train_bn=True):
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
     epsilon = {b: 1/((2**b)-1) for b in bit_width_list}
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
+    b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
             input = input.cuda()
@@ -193,17 +193,28 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             loss = criterion(output, target)
             # Evaluate slack
             for bitwidth in bit_width_list[:-1]:
-                with torch.no_grad():# We don't need gradients w.r.t. quantized model
-                    model.apply(lambda m: setattr(m, 'wbit', bitwidth))
-                    model.apply(lambda m: setattr(m, 'abit', bitwidth))
-                    act_q = model.get_activations(input) # C: not sure if detach is necesary
+                model.apply(lambda m: setattr(m, 'wbit', bitwidth))
+                model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                for name, param in model.named_parameters():
+                    if "bn" in name:
+                        param.requires_grad = train_bn
+                    else:
+                        param.requires_grad = False
+                act_q = model.get_activations(input) # C: not sure if detach is necesary
                 model.apply(lambda m: setattr(m, 'wbit', 32))
                 model.apply(lambda m: setattr(m, 'abit', 32))
+                # Freeze bn statistics to use quantized activations
+                model.eval()
+                # Re-Enable Grads For constraint Eval For all FP layers
+                for param in model.parameters():
+                    param.requires_grad = True
                 act_full = model.eval_layers(input, act_q)
+                model.train()
                 slacks = torch.zeros_like(lambdas)
                 # This will be vectorised
                 for l, (full, q) in enumerate(zip(act_full, act_q)):
-                    slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
+                    if not l in b_norm_layers:
+                        slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
             optimizer.step()
@@ -224,7 +235,6 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                     model.apply(lambda m: setattr(m, 'abit', bw))
                     output = model(input)
                     loss = criterion(output, target)
-
                     prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
                     am_l.update(loss.item(), input.size(0))
                     am_t1.update(prec1.item(), input.size(0))
@@ -246,15 +256,15 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                     act_full = model.eval_layers(input, act_q)
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
-                        const_vec = torch.abs(full-q)
-                        if const_vec.dim()>1:
-                            const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
-                        else:
-                            const = const_vec
-                        slacks[l] += torch.sum(const)-epsilon[bitwidth]
+                        if not l in b_norm_layers:
+                            const_vec = torch.abs(full-q)
+                            if const_vec.dim()>1:
+                                const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                            else:
+                                const = const_vec
+                            slacks[l] += torch.sum(const)-epsilon[bitwidth]
                 slacks = slacks/len(data_loader.dataset)
-                lambdas = torch.nn.functional.relu(lambdas+args.lr_dual*slacks)
-        
+                lambdas = torch.nn.functional.relu(lambdas + args.lr_dual*slacks)
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], lambdas
     else:
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]
