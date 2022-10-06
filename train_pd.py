@@ -246,7 +246,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                     act_full = model.eval_layers(input, act_q)
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
-                        const_vec = torch.nn.functional.l1_loss(full, q, reduce='none')
+                        const_vec = torch.nn.functional.l1_loss(full, q, reduction='none')
                         # mean across all dimensions but battch dimension
                         const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                         slacks[l] += const-epsilon[bitwidth]
