@@ -216,6 +216,7 @@ def main():
                     for l in range(len(lambdas[bw])-1):
                         wandb.log({f"dual_layer_{l}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
                     wandb.log({f"dual_CE_bw_{bw}": lambdas[bw][-1].item(), "epoch":epoch })
+                    print(f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
         ####################
         # STDOUT printing
         ####################
@@ -235,6 +236,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
+    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list[:-1]]
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
@@ -285,6 +287,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 slacks = torch.zeros_like(lambdas[bitwidth])
                 # Output Constraint
                 slacks[-1] = criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1]
+                slack_meter[j][-1].update(slacks[-1].item(), input.size(0))
                 if args.layerwise_constraint: 
                     # Compute Full Prec layer outputs with Low Prec Activations as inputs
                     act_full = model.eval_layers(input, act_q)
@@ -292,8 +295,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
                         if not l in b_norm_layers:
                             slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
+                            slack_meter[j][l].update(slacks[l].item(), input.size(0))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
                 target_soft = torch.nn.functional.softmax(out_q.detach(), dim=1)
+
             loss.backward()
             # Copy BN gradients of low precision copy
             # To Main model
@@ -304,11 +309,15 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             optimizer.step()
             # Logging and printing
             if i % args.print_freq == 0:
-                logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
-                    epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
+                logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}, slacklCE{6:.2f}'.format(
+                    epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val, slack_meter[0][-1].val))
                 for tacc, tl, bw in zip(top1, losses, bit_width_list):
                     wandb.log({f'trainloss_{bw}':tl.avg, "epoch":epoch})
                     wandb.log({f'trainacc_{bw}':tacc.avg, "epoch":epoch})
+                for sl, bw in zip(slack_meter, bit_width_list[:-1]):
+                    for l in range(len(lambdas[bw])-1):
+                        wandb.log({f"slack_layer_{l}_bw_{bw}": sl[l].avg, "epoch":epoch })
+                    wandb.log({f"slack_CE_bw_{bw}": sl[-1].avg, "epoch":epoch})     
                 for bw in bit_width_list[:-1]:
                     wandb.log({'model_bn_mean': model.bn.bn_dict[str(bw)].running_mean, 'model_bn_var': model.bn.bn_dict[str(bw)].running_var})
                 for name, param in model.named_parameters():
@@ -352,7 +361,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     # Compute forward
                     out_q = model(input)
                     # Eval slack
-                    slacks[-1] = criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1]
+                    slacks[-1] += criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1]
                     if args.layerwise_constraint:
                         model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                         model.apply(lambda m: setattr(m, 'abit', bitwidth))
