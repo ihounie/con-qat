@@ -58,9 +58,9 @@ def get_meanvar_by_name(module,access_string):
     Works even when there is a Sequential in the module.
     """
     names = access_string.split(sep='.')[-1]
-    running_mean += "running_mean"
-    running_var += "running_var"
-    return reduce(getattr, names, module)
+    running_mean =  names+["running_mean"]
+    running_var = names+["running_var"]
+    return reduce(getattr, running_mean, module), reduce(getattr, running_var, module)
 
 
 def main():
@@ -223,13 +223,18 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             output = model(input)
             loss = criterion(output, target)
             # Evaluate slack
-            for bitwidth in bit_width_list[:-1]:
+            for i, bitwidth in enumerate(bit_width_list[:-1]):
                 # Forward pass to update bn stats
                 model.train()
                 with torch.no_grad():
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
-                    _ = model(input)
+                    out_q = model(input)
+                    loss_q = criterion(output, target)
+                    prec1_q, prec5_q = accuracy(output.data, target, topk=(1, 5)) 
+                    losses[i].update(loss_q.item(), input.size(0))
+                    top1[i].update(prec1_q.item(), input.size(0))
+                    top5[i].update(prec5_q.item(), input.size(0))                   
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
                 act_q = model_q.get_activations(input)
@@ -245,14 +250,9 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                         slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
-            '''
             for name, param in model_q.named_parameters():
                     if "bn" in name and "32" not in name:
                         get_param_by_name(model,name).grad = param.grad
-                    if "bn" in name and "bias" not in name:
-                        mean, var = get_meanvar_by_name(module,name)
-                        set_meanvar_by_name(module,name)
-            '''
             optimizer.step()
             prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
             losses[-1].update(loss.item(), input.size(0))
@@ -261,6 +261,12 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
                     epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
+                for bw in bit_width_list[:-1]:
+                    wandb.log({'model_bn_mean': model.bn.bn_dict[str(bw)].running_mean, 'model_bn_var': model.bn.bn_dict[str(bw)].running_var})
+                for name, param in model.named_parameters():
+                    if "bn" in name:
+                        wandb.log({name: param.data, f'{name}_grad': param.grad})
+
         else:
             # Just compute forward passes
             with torch.no_grad():
