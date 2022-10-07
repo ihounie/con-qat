@@ -52,29 +52,33 @@ def get_param_by_name(module,access_string):
     names = access_string.split(sep='.')
     return reduce(getattr, names, module)
 
-def get_meanvar_by_name(module,access_string):
-    """Retrieve a module nested in another by its access string.
-
-    Works even when there is a Sequential in the module.
-    """
-    names = access_string.split(sep='.')[-1]
-    running_mean =  names+["running_mean"]
-    running_var = names+["running_var"]
-    return reduce(getattr, running_mean, module), reduce(getattr, running_var, module)
-
+def get_bit_width_list(args):
+    bit_width_list = list(map(int, args.bit_width_list.split(',')))
+    bit_width_list.sort()
+    # Add Full precision if not Passed
+    if 32 not in bit_width_list:
+        bit_width_list += [32]
+    return bit_width_list
 
 def main():
+    #####################
+    #   LOGGING
+    #####################
     if args.wandb_log:
         wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
         wandb.config.update(args)
     hostname = socket.gethostname()
     setup_logging(os.path.join(args.results_dir, 'log_{}.txt'.format(hostname)))
     logging.info("running arguments: %s", args)
-
+    ########################
+    # choose and config GPU
+    ########################
     best_gpu = setup_gpus()
     torch.cuda.set_device(best_gpu)
     torch.backends.cudnn.benchmark = True
-
+    ########################
+    #   DATALOADERS
+    #######################
     train_transform = get_transform(args.dataset, 'train')
     train_data = get_dataset(args.dataset, args.train_split, train_transform)
     train_loader = torch.utils.data.DataLoader(train_data,
@@ -90,10 +94,14 @@ def main():
                                              shuffle=False,
                                              num_workers=args.workers,
                                              pin_memory=True)
-
-    bit_width_list = list(map(int, args.bit_width_list.split(',')))
-    bit_width_list.sort()
-    model = models.__dict__[args.model](bit_width_list+[32], train_data.num_classes).cuda()
+    ######################
+    #   BIT WIDTHs
+    ######################
+    bit_width_list = get_bit_width_list(args)
+    #####################
+    # MODEL and OPT
+    #####################
+    model = models.__dict__[args.model](bit_width_list, train_data.num_classes).cuda()
     lr_decay = list(map(int, args.lr_decay.split(',')))
     optimizer = get_optimizer_config(model, args.optimizer, args.lr, args.weight_decay)
     lr_scheduler = None
@@ -125,44 +133,39 @@ def main():
     num_parameters = sum([l.nelement() for l in model.parameters()])
     logging.info("number of parameters: %d", num_parameters)
 
-    criterion = nn.CrossEntropyLoss().cuda()
-    #criterion_soft = CrossEntropyLossSoft().cuda()
-    sum_writer = SummaryWriter(args.results_dir + '/summary')
-    # init dual vars at zero
+    criterion = nn.CrossEntropyLoss().cuda()#Loss
+    criterion_soft = CrossEntropyLossSoft().cuda()#Unused
+    sum_writer = SummaryWriter(args.results_dir + '/summary')   
     num_layers = model.get_num_layers()
-    lambdas = torch.zeros(num_layers, requires_grad=False).cuda()
-    # Compute and log Initial loss
-    '''
-    model.eval()
-    val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, epoch, False)
-    if args.wandb_log:
-        for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
-                                                    val_prec1, val_prec5):
-            wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
-            wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
-            wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
-            wandb.log({f'test_acc_{bw}':vp1, "epoch":epoch})
-    '''
+    #########################
+    # DUAL INIT
+    ########################
+    # Tensor w/One dual variable per layer
+    # For each low precision bitwidth
+    lambdas = {bw:torch.zeros(num_layers, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
+    #########################
+    # TRAIN LOOP
+    ########################
     for epoch in range(args.start_epoch, args.epochs):
+        ################
+        #  Train Epoch
+        ################
         model.train()
         train_loss, train_prec1, train_prec5, lambdas = forward(train_loader, model,lambdas, criterion, epoch, True,
                                                        optimizer, sum_writer)
-        if args.wandb_log:
-            wandb.log({"train_loss": train_loss[-1],"train_acc":train_prec1[-1], "epoch":epoch })
-            hist = wandb.Histogram(np_histogram=(lambdas.cpu().numpy(), [float(l) for l in range(num_layers+1)]) )
-            wandb.log({"dual_vars": hist, "epoch":epoch })
-            for l in range(len(lambdas)):
-                wandb.log({f"dual_layer_{l}": lambdas[l].item(), "epoch":epoch })
+        #######################
+        #   Test
+        #######################
+        print("Evaluating Model...")              
         model.eval()
         val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, epoch, False)
-        if args.wandb_log:
-            wandb.log({"test_loss": val_loss[-1],"test_acc":val_prec1[-1], "epoch":epoch })
-
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
             lr_scheduler.step()
-
+        #####################
+        #   Model Saving
+        #####################
         if best_prec1 is None:
             is_best = True
             best_prec1 = val_prec1[-1]
@@ -179,7 +182,9 @@ def main():
             },
             is_best,
             path=args.results_dir + '/ckpt')
-
+        ###############################
+        #   Local (Tensorboard) Logging
+        ###############################
         if sum_writer is not None:
             sum_writer.add_scalar('lr', optimizer.param_groups[0]['lr'], global_step=epoch)
             for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
@@ -190,22 +195,33 @@ def main():
                 sum_writer.add_scalar('val_loss_{}'.format(bw), vl, global_step=epoch)
                 sum_writer.add_scalar('val_prec_1_{}'.format(bw), vp1, global_step=epoch)
                 sum_writer.add_scalar('val_prec_5_{}'.format(bw), vp5, global_step=epoch)
+        ###############################
+        #   W&B Logging
+        ###############################
         if args.wandb_log:
-            for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
-                                                      val_prec1, val_prec5):
+            for bw, tl, tp1, vl, vp1 in zip(bit_width_list, train_loss, train_prec1, val_loss, val_prec1):
                 wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
                 wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
                 wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
                 wandb.log({f'test_acc_{bw}':vp1, "epoch":epoch})
-
+                # If low precision, log associated Dual Variables
+                if bw != bit_width_list[-1]:
+                    hist = wandb.Histogram(np_histogram=(lambdas[bw].cpu().numpy(), [float(l) for l in range(num_layers+1)]) )
+                    wandb.log({"dual_vars": hist, "epoch":epoch })
+                    for l in range(len(lambdas[bw])):
+                        wandb.log({f"dual_layer_{l}": lambdas[bw][l].item(), "epoch":epoch })
+        ####################
+        # STDOUT printing
+        ####################
         logging.info('Epoch {}: \ntrain loss {:.2f}, train prec1 {:.2f}, train prec5 {:.2f}\n'
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
 def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimizer=None, sum_writer=None, train_bn=True):
-    bit_width_list = list(map(int, args.bit_width_list.split(',')))
-    bit_width_list.sort()
+    # Save state to return model in its initial state
+    initial_model_state = model.training
+    bit_width_list = get_bit_width_list(args)
     epsilon = {b: 1/((2**b)-1) for b in bit_width_list}
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
@@ -213,51 +229,68 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
-            model.train()
+            if not model.training:
+                model.train()
             input = input.cuda()
             target = target.cuda(non_blocking=True)
             optimizer.zero_grad()
             # compute Full precision forward pass and loss
-            model.apply(lambda m: setattr(m, 'wbit', 32))
-            model.apply(lambda m: setattr(m, 'abit', 32))
+            # since bitwidth list is sorted in ascending order, the last elem is the highest prec
+            model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
+            model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
             output = model(input)
             loss = criterion(output, target)
+            # Accumulate Grads
+            loss.backward()
+            # Evaluate and log Acc
+            prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+            losses[-1].update(loss.item(), input.size(0))
+            top1[-1].update(prec1.item(), input.size(0))
+            top5[-1].update(prec5.item(), input.size(0))
             # Evaluate slack
+            # We exlude the highest precision (bit_width_list[:-1])
             for j, bitwidth in enumerate(bit_width_list[:-1]):
                 # Forward pass to update bn stats
-                model.train()
                 with torch.no_grad():
+                    # Set model to Low Precision
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                    # Compute forward
                     out_q = model(input)
                     loss_q = criterion(out_q, target)
+                    # Compute and log loss and acc
                     prec1_q, prec5_q = accuracy(out_q.data, target, topk=(1, 5)) 
                     losses[j].update(loss_q.item(), input.size(0))
                     top1[j].update(prec1_q.item(), input.size(0))
                     top5[j].update(prec5_q.item(), input.size(0))                   
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
+                # compute forward with Low precision model and
+                # Grads enabled
                 act_q = model_q.get_activations(input)
-                model.apply(lambda m: setattr(m, 'wbit', 32))
-                model.apply(lambda m: setattr(m, 'abit', 32))
+                # Set model to Full Precision
+                model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
+                model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
                 # Freeze bn statistics to use quantized activations
                 model.eval()
+                # Compute Full Prec layer outputs with Low Prec Activations as inputs
                 act_full = model.eval_layers(input, act_q)
-                slacks = torch.zeros_like(lambdas)
+                # Init Slacks
+                slacks = torch.zeros_like(lambdas[bitwidth])
                 # This will be vectorised
                 for l, (full, q) in enumerate(zip(act_full, act_q)):
                     if not l in b_norm_layers:
                         slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
-                loss = loss + torch.sum(lambdas * slacks)
-            loss.backward()
+                loss = torch.sum(lambdas[bitwidth] * slacks)
+                loss.backward()
+            # Copy BN gradients of low precision copy
+            # To Main model
             for name, param in model_q.named_parameters():
-                if "bn" in name and "32" not in name:
+                if "bn" in name and str(bit_width_list[-1]) not in name:
                     get_param_by_name(model,name).grad = param.grad
+            # GD Step
             optimizer.step()
-            prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-            losses[-1].update(loss.item(), input.size(0))
-            top1[-1].update(prec1.item(), input.size(0))
-            top5[-1].update(prec5.item(), input.size(0))
+            # Logging and printing
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
                     epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
@@ -272,6 +305,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
 
         else:
             # Just compute forward passes
+            model.eval()
             with torch.no_grad():
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
@@ -290,7 +324,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
         for bitwidth in bit_width_list[:-1]:
             model.eval()
             with torch.no_grad():
-                slacks = torch.zeros_like(lambdas)
+                slacks = torch.zeros_like(lambdas[bitwidth])
                 for i, (input, target) in enumerate(data_loader):
                     input = input.cuda()
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
@@ -309,10 +343,14 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                                 const = const_vec
                             slacks[l] += torch.sum(const-epsilon[bitwidth])
                 slacks = slacks/len(data_loader.dataset)
-                lambdas = torch.nn.functional.relu(lambdas + args.lr_dual*slacks)
-        model.train()
+                lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks)
+        # Return model in training mode if received in training mode
+        if initial_model_state:
+            model.train()
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], lambdas
     else:
+        if initial_model_state:
+            model.train()
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]
 
 

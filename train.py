@@ -94,8 +94,6 @@ def main(args):
         model.train()
         train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, args, True,
                                                        optimizer, sum_writer)
-        if args.wandb_log:
-            wandb.log({"train_loss": train_loss[-1],"train_acc":train_prec1[-1], "epoch":epoch })
         model.eval()
         val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, args, False)
         if args.wandb_log:
@@ -195,9 +193,6 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                 model.apply(lambda m: setattr(m, 'wbit', bw))
                 model.apply(lambda m: setattr(m, 'abit', bw))
                 output = model(input)
-                # hard cross entropy
-                # loss = criterion(output, target)
-                # soft cross entropy
                 loss = criterion_soft(output, target_soft)
                 loss.backward()
                 # recursive supervision
