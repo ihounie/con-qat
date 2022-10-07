@@ -223,18 +223,18 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             output = model(input)
             loss = criterion(output, target)
             # Evaluate slack
-            for i, bitwidth in enumerate(bit_width_list[:-1]):
+            for j, bitwidth in enumerate(bit_width_list[:-1]):
                 # Forward pass to update bn stats
                 model.train()
                 with torch.no_grad():
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
                     out_q = model(input)
-                    loss_q = criterion(output, target)
-                    prec1_q, prec5_q = accuracy(output.data, target, topk=(1, 5)) 
-                    losses[i].update(loss_q.item(), input.size(0))
-                    top1[i].update(prec1_q.item(), input.size(0))
-                    top5[i].update(prec5_q.item(), input.size(0))                   
+                    loss_q = criterion(out_q, target)
+                    prec1_q, prec5_q = accuracy(out_q.data, target, topk=(1, 5)) 
+                    losses[j].update(loss_q.item(), input.size(0))
+                    top1[j].update(prec1_q.item(), input.size(0))
+                    top5[j].update(prec5_q.item(), input.size(0))                   
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
                 act_q = model_q.get_activations(input)
@@ -251,8 +251,8 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
             for name, param in model_q.named_parameters():
-                    if "bn" in name and "32" not in name:
-                        get_param_by_name(model,name).grad = param.grad
+                if "bn" in name and "32" not in name:
+                    get_param_by_name(model,name).grad = param.grad
             optimizer.step()
             prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
             losses[-1].update(loss.item(), input.size(0))
@@ -261,6 +261,9 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
                     epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
+                for tacc, tl, bw in zip(top1, losses, bit_width_list):
+                    wandb.log({f'trainloss_{bw}':tl.avg, "epoch":epoch})
+                    wandb.log({f'trainacc_{bw}':tacc.avg, "epoch":epoch})
                 for bw in bit_width_list[:-1]:
                     wandb.log({'model_bn_mean': model.bn.bn_dict[str(bw)].running_mean, 'model_bn_var': model.bn.bn_dict[str(bw)].running_var})
                 for name, param in model.named_parameters():
