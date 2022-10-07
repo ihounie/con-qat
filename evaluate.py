@@ -19,6 +19,7 @@ from datasets.data import get_dataset, get_transform
 from optimizer import get_optimizer_config, get_lr_scheduler
 from utils import setup_logging, setup_gpus, save_checkpoint
 from utils import AverageMeter, accuracy
+from train import forward
 
 import wandb
 
@@ -32,8 +33,8 @@ parser.add_argument('--print-freq', '-p', default=20, type=int, help='print freq
 parser.add_argument('--model_path', default=None, help='path to latest checkpoint')
 parser.add_argument('--bit_width_list', default='4', help='bit width list')
 parser.add_argument('--wandb_log',  action='store_true')
+parser.add_argument('--copy_bn',  action='store_true')
 args = parser.parse_args()
-
 
 def main():
     if args.wandb_log:
@@ -71,7 +72,15 @@ def main():
         checkpoint = torch.load(args.model_path, map_location='cuda:{}'.format(best_gpu))
         args.start_epoch = checkpoint['epoch']
         best_prec1 = checkpoint['best_prec1']
-        model.load_state_dict(checkpoint['state_dict'])
+        param_dict = checkpoint['state_dict']
+        new_param_dict = {}
+        if args.copy_bn:
+            for k, v in param_dict.items():
+                new_param_dict[k] = v
+                for bw in bit_width_list:
+                    if "bn" in  k:
+                        new_param_dict[k.replace('32', str(bw))] = v       
+        model.load_state_dict(new_param_dict)
         logging.info("loaded resume checkpoint '%s' (epoch %s)", args.model_path, checkpoint['epoch'])
     else:
         print(args.model_path)
@@ -80,14 +89,20 @@ def main():
     criterion = torch.nn.MSELoss(reduction="none").cuda()
     sum_writer = None#SummaryWriter(args.results_dir + '/summary')
     model.eval()
-    for bw in bit_width_list:
-        constraint_train = eval_constraint(train_loader, model, criterion, bitwidth=bw).cpu().numpy()
-        constraint_test = eval_constraint(val_loader, model, criterion, bitwidth=bw).cpu().numpy()
-        for layer, (c_train, c_test) in enumerate(zip(constraint_train, constraint_test)):
-            if args.wandb_log:
-                wandb.log({f"mse_train_layer_{layer}_bw_{bw}":c_train,f"mse_test_layer_{layer}_bw_{bw}":c_test})
-            print(f"mse_train_layer_{layer}_bw_{bw}: {c_train}")
-            print(f"mse_test_layer_{layer}_bw_{bw}: {c_test}")
+    val_loss, val_prec1, val_prec5 = forward(val_loader, model, nn.CrossEntropyLoss().cuda(), None, 0, args, False)
+    if args.wandb_log:
+            for bw, vl, vp1, vp5 in zip(bit_width_list,val_loss,val_prec1, val_prec5):
+                wandb.log({f'test_loss_{bw}':vl, "epoch":200})
+                wandb.log({f'test_acc_{bw}':vp1, "epoch":200})
+    if False:
+        for bw in bit_width_list:
+            constraint_train = eval_constraint(train_loader, model, criterion, bitwidth=bw).cpu().numpy()
+            constraint_test = eval_constraint(val_loader, model, criterion, bitwidth=bw).cpu().numpy()
+            for layer, (c_train, c_test) in enumerate(zip(constraint_train, constraint_test)):
+                if args.wandb_log:
+                    wandb.log({f"l1_train_layer_{layer}_bw_{bw}":c_train,f"l1_test_layer_{layer}_bw_{bw}":c_test})
+                print(f"l1_train_layer_{layer}_bw_{bw}: {c_train}")
+                print(f"l1_test_layer_{layer}_bw_{bw}: {c_test}")
 
 
 def eval_constraint(data_loader, model, criterion, bitwidth=4):
@@ -106,9 +121,8 @@ def eval_constraint(data_loader, model, criterion, bitwidth=4):
             model.apply(lambda m: setattr(m, 'wbit', 32))
             model.apply(lambda m: setattr(m, 'abit', 32))
             act_full = model.eval_layers(input, act_q)
-            # This will be vectorised
             for l, (full, q) in enumerate(zip(act_full, act_q)):
-                dist = criterion(full, q)
+                dist = torch.abs(full-q)
                 # mean taken only accross features, not batch dim (first)
                 if dist.dim()>1:
                     mean_dist = torch.mean(dist, axis=[l for l in range(1, dist.dim())])

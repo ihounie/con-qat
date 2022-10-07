@@ -5,8 +5,7 @@ import socket
 import logging
 from datetime import datetime
 from functools import partial
-import yaml
-
+from functools import reduce
 import torch
 import torch.nn as nn
 import torch.optim
@@ -22,6 +21,7 @@ from utils import setup_logging, setup_gpus, save_checkpoint
 from utils import AverageMeter, accuracy
 
 import wandb
+import copy
 
 parser = argparse.ArgumentParser(description='Training')
 parser.add_argument('--results-dir', default='./results', help='results dir')
@@ -43,6 +43,15 @@ parser.add_argument('--resume', default=None, help='path to latest checkpoint')
 parser.add_argument('--bit_width_list', default='4', help='bit width list')
 parser.add_argument('--wandb_log',  action='store_true')
 args = parser.parse_args()
+
+def get_param_by_name(module,access_string):
+    """Retrieve a module nested in another by its access string.
+
+    Works even when there is a Sequential in the module.
+    """
+    names = access_string.split(sep='.')
+    return reduce(getattr, names, module)
+
 
 
 def main():
@@ -113,6 +122,18 @@ def main():
     # init dual vars at zero
     num_layers = model.get_num_layers()
     lambdas = torch.zeros(num_layers, requires_grad=False).cuda()
+    # Compute and log Initial loss
+    '''
+    model.eval()
+    val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, epoch, False)
+    if args.wandb_log:
+        for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
+                                                    val_prec1, val_prec5):
+            wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
+            wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
+            wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
+            wandb.log({f'test_acc_{bw}':vp1, "epoch":epoch})
+    '''
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
         train_loss, train_prec1, train_prec5, lambdas = forward(train_loader, model,lambdas, criterion, epoch, True,
@@ -183,6 +204,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
+            model.train()
             input = input.cuda()
             target = target.cuda(non_blocking=True)
             optimizer.zero_grad()
@@ -193,23 +215,12 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             loss = criterion(output, target)
             # Evaluate slack
             for bitwidth in bit_width_list[:-1]:
-                model.apply(lambda m: setattr(m, 'wbit', bitwidth))
-                model.apply(lambda m: setattr(m, 'abit', bitwidth))
-                for name, param in model.named_parameters():
-                    if "bn" in name:
-                        param.requires_grad = train_bn
-                    else:
-                        param.requires_grad = False
-                act_q = model.get_activations(input) # C: not sure if detach is necesary
-                model.apply(lambda m: setattr(m, 'wbit', 32))
-                model.apply(lambda m: setattr(m, 'abit', 32))
+                model_q = copy.deepcopy(model)
+                model_q.apply(lambda m: setattr(m, 'wbit', bitwidth))
+                model_q.apply(lambda m: setattr(m, 'abit', bitwidth))
+                act_q = model_q.get_activations(input)
                 # Freeze bn statistics to use quantized activations
-                model.eval()
-                # Re-Enable Grads For constraint Eval For all FP layers
-                for param in model.parameters():
-                    param.requires_grad = True
                 act_full = model.eval_layers(input, act_q)
-                model.train()
                 slacks = torch.zeros_like(lambdas)
                 # This will be vectorised
                 for l, (full, q) in enumerate(zip(act_full, act_q)):
@@ -217,6 +228,9 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                         slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
+            for name, param in model_q.named_parameters():
+                    if "bn" in name and "32" not in name:
+                        get_param_by_name(model,name).grad = param.grad
             optimizer.step()
             prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
             losses[-1].update(loss.item(), input.size(0))
@@ -265,6 +279,7 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                             slacks[l] += torch.sum(const-epsilon[bitwidth])
                 slacks = slacks/len(data_loader.dataset)
                 lambdas = torch.nn.functional.relu(lambdas + args.lr_dual*slacks)
+        model.train()
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], lambdas
     else:
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]

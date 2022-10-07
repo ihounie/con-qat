@@ -22,28 +22,8 @@ from utils import AverageMeter, accuracy
 
 import wandb
 
-parser = argparse.ArgumentParser(description='Training')
-parser.add_argument('--results-dir', default='./results', help='results dir')
-parser.add_argument('--dataset', default='imagenet', help='dataset name or folder')
-parser.add_argument('--train_split', default='train', help='train split name')
-parser.add_argument('--model', default='resnet18', help='model architecture')
-parser.add_argument('--workers', default=0, type=int, help='number of data loading workers')
-parser.add_argument('--epochs', default=200, type=int, help='number of epochs')
-parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')
-parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
-parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
-parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
-parser.add_argument('--lr_decay', default='100,150,180', help='lr decay steps')
-parser.add_argument('--weight-decay', default=3e-4, type=float, help='weight decay')
-parser.add_argument('--print-freq', '-p', default=20, type=int, help='print frequency')
-parser.add_argument('--pretrain', default=None, help='path to pretrained full-precision checkpoint')
-parser.add_argument('--resume', default=None, help='path to latest checkpoint')
-parser.add_argument('--bit_width_list', default='4', help='bit width list')
-parser.add_argument('--wandb_log',  action='store_true')
-args = parser.parse_args()
 
-
-def main():
+def main(args):
     if args.wandb_log:
         wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
         wandb.config.update(args)
@@ -112,12 +92,12 @@ def main():
 
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
-        train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, True,
+        train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, args, True,
                                                        optimizer, sum_writer)
         if args.wandb_log:
             wandb.log({"train_loss": train_loss[-1],"train_acc":train_prec1[-1], "epoch":epoch })
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, False)
+        val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, args, False)
         if args.wandb_log:
             wandb.log({"test_loss": val_loss[-1],"test_acc":val_prec1[-1], "epoch":epoch })
 
@@ -167,7 +147,7 @@ def main():
                          val_prec5[-1]))
 
 
-def forward(data_loader, model, criterion, criterion_soft, epoch, training=True, optimizer=None, sum_writer=None):
+def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, sum_writer=None):
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
 
@@ -237,4 +217,23 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, training=True,
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description='Training')
+    parser.add_argument('--results-dir', default='./results', help='results dir')   
+    parser.add_argument('--dataset', default='imagenet', help='dataset name or folder')
+    parser.add_argument('--train_split', default='train', help='train split name')
+    parser.add_argument('--model', default='resnet18', help='model architecture')
+    parser.add_argument('--workers', default=0, type=int, help='number of data loading workers')
+    parser.add_argument('--epochs', default=200, type=int, help='number of epochs')
+    parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')
+    parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
+    parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
+    parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
+    parser.add_argument('--lr_decay', default='100,150,180', help='lr decay steps')
+    parser.add_argument('--weight-decay', default=3e-4, type=float, help='weight decay')
+    parser.add_argument('--print-freq', '-p', default=20, type=int, help='print frequency')
+    parser.add_argument('--pretrain', default=None, help='path to pretrained full-precision checkpoint')
+    parser.add_argument('--resume', default=None, help='path to latest checkpoint')
+    parser.add_argument('--bit_width_list', default='4', help='bit width list')
+    parser.add_argument('--wandb_log',  action='store_true')
+    args = parser.parse_args()
+    main(args)
