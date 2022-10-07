@@ -52,6 +52,15 @@ def get_param_by_name(module,access_string):
     names = access_string.split(sep='.')
     return reduce(getattr, names, module)
 
+def get_meanvar_by_name(module,access_string):
+    """Retrieve a module nested in another by its access string.
+
+    Works even when there is a Sequential in the module.
+    """
+    names = access_string.split(sep='.')[-1]
+    running_mean += "running_mean"
+    running_var += "running_var"
+    return reduce(getattr, names, module)
 
 
 def main():
@@ -215,11 +224,19 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
             loss = criterion(output, target)
             # Evaluate slack
             for bitwidth in bit_width_list[:-1]:
+                # Forward pass to update bn stats
+                model.train()
+                with torch.no_grad():
+                    model.apply(lambda m: setattr(m, 'wbit', bitwidth))
+                    model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                    _ = model(input)
+                # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
-                model_q.apply(lambda m: setattr(m, 'wbit', bitwidth))
-                model_q.apply(lambda m: setattr(m, 'abit', bitwidth))
                 act_q = model_q.get_activations(input)
+                model.apply(lambda m: setattr(m, 'wbit', 32))
+                model.apply(lambda m: setattr(m, 'abit', 32))
                 # Freeze bn statistics to use quantized activations
+                model.eval()
                 act_full = model.eval_layers(input, act_q)
                 slacks = torch.zeros_like(lambdas)
                 # This will be vectorised
@@ -228,9 +245,14 @@ def forward(data_loader, model, lambdas, criterion, epoch, training=True, optimi
                         slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
                 loss = loss + torch.sum(lambdas * slacks)
             loss.backward()
+            '''
             for name, param in model_q.named_parameters():
                     if "bn" in name and "32" not in name:
                         get_param_by_name(model,name).grad = param.grad
+                    if "bn" in name and "bias" not in name:
+                        mean, var = get_meanvar_by_name(module,name)
+                        set_meanvar_by_name(module,name)
+            '''
             optimizer.step()
             prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
             losses[-1].update(loss.item(), input.size(0))
