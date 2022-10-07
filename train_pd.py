@@ -230,7 +230,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     initial_model_state = model.training
     bit_width_list = get_bit_width_list(args)
     if args.layerwise_constraint:
-        epsilon = {b: [ 1/((2**b)-1) for _ in model.get_num_layers()]+[args.epsilon_out] for b in bit_width_list}
+        epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
     else:
         epsilon = {b: [args.epsilon_out] for b in bit_width_list}
     losses = [AverageMeter() for _ in bit_width_list]
@@ -294,7 +294,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
                         if not l in b_norm_layers:
-                            slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth]
+                            slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth][l]
                             slack_meter[j][l].update(slacks[l].item(), input.size(0))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
                 target_soft = torch.nn.functional.softmax(out_q.detach(), dim=1)
@@ -377,7 +377,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                     const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                                 else:
                                     const = const_vec
-                                slacks[l] += torch.sum(const-epsilon[bitwidth])
+                                slacks[l] += torch.sum(const-epsilon[bitwidth][l])
                 slacks = slacks/len(data_loader.dataset)
                 lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks)
         if initial_model_state:
