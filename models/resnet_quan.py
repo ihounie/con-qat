@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .quan_ops import conv2d_quantize_fn, activation_quantize_fn, batchnorm_fn
+from .quan_ops import conv2d_quantize_fn, activation_quantize_fn, batchnorm_fn, batchnorm1d_fn
 
 __all__ = ['resnet20q', 'resnet50q']
 
@@ -76,12 +76,14 @@ class PreActResNet(nn.Module):
         self.wbit = self.bit_list[-1]
         self.abit = self.bit_list[-1]
         self.expand = expand
+        self.bn_act_norm = []
 
         NormLayer = batchnorm_fn(self.bit_list)
+        NormLayer1d = batchnorm1d_fn(self.bit_list)
 
         ep = self.expand
         self.conv0 = nn.Conv2d(3, 16 * ep, kernel_size=3, stride=1, padding=1, bias=False)
-
+        self.bn_act_norm.append(NormLayer(16 * ep, affine=False))
         strides = [1] * num_units[0] + [2] + [1] * (num_units[1] - 1) + [2] + [1] * (num_units[2] - 1)
         channels = [16 * ep] * num_units[0] + [32 * ep] * num_units[1] + [64 * ep] * num_units[2]
         in_planes = 16 * ep
@@ -89,8 +91,11 @@ class PreActResNet(nn.Module):
         for stride, channel in zip(strides, channels):
             self.layers.append(block(self.bit_list, in_planes, channel, stride))
             in_planes = channel
+            self.bn_act_norm.append(NormLayer(channel, affine=False))
 
         self.bn = NormLayer(64 * ep)
+        self.bn_act_norm.append(NormLayer(64 * ep, affine=False))
+        self.bn_act_norm.append(NormLayer1d(64 * ep, affine=False))
         self.fc = nn.Linear(64 * ep, num_classes)
 
     def forward(self, x):
@@ -113,7 +118,6 @@ class PreActResNet(nn.Module):
         out = out.mean(dim=2).mean(dim=2)
         act.append(out)
         out = self.fc(out)
-        act.append(out)
         return act
     
     def eval_layers(self,input, activations):
@@ -125,15 +129,23 @@ class PreActResNet(nn.Module):
         out.append(self.bn(activations[idx]))
         idx+=1
         out.append(activations[idx].mean(dim=2).mean(dim=2))
-        idx+=1
-        out.append(self.fc(activations[idx]))
         return out
-    
+
+    def norm_act(self,activations):
+        norm_act = []
+        for bn, act in zip(self.bn_act_norm, activations):
+            norm_act.append(bn(act))
+        return norm_act
+
+    def bn_to_cuda(self):
+        for bn in self.bn_act_norm:
+            bn.cuda()
+
     def get_num_layers(self):
         num_layers = 1 # conv0
         for layer in self.layers:#conv layers
             num_layers +=1
-        num_layers += 3 # bn, pooling, fc
+        num_layers += 2 # bn, pooling
         return num_layers
 
     def get_bn_layers(self):

@@ -11,12 +11,12 @@ import numpy as np
 class SwitchBatchNorm2d(nn.Module):
     """Adapted from https://github.com/JiahuiYu/slimmable_networks
     """
-    def __init__(self, num_features, bit_list):
+    def __init__(self, num_features, bit_list, affine=True):
         super(SwitchBatchNorm2d, self).__init__()
         self.bit_list = bit_list
         self.bn_dict = nn.ModuleDict()
         for i in self.bit_list:
-            self.bn_dict[str(i)] = nn.BatchNorm2d(num_features)
+            self.bn_dict[str(i)] = nn.BatchNorm2d(num_features, affine=affine)
 
         self.abit = self.bit_list[-1]
         self.wbit = self.bit_list[-1]
@@ -28,10 +28,10 @@ class SwitchBatchNorm2d(nn.Module):
         return x
 
 
-def batchnorm2d_fn(bit_list):
+def batchnorm2d_fn(bit_list, affine=True):
     class SwitchBatchNorm2d_(SwitchBatchNorm2d):
-        def __init__(self, num_features, bit_list=bit_list):
-            super(SwitchBatchNorm2d_, self).__init__(num_features=num_features, bit_list=bit_list)
+        def __init__(self, num_features, bit_list=bit_list, affine=affine):
+            super(SwitchBatchNorm2d_, self).__init__(num_features=num_features, bit_list=bit_list, affine=affine)
 
     return SwitchBatchNorm2d_
 
@@ -39,12 +39,12 @@ def batchnorm2d_fn(bit_list):
 class SwitchBatchNorm1d(nn.Module):
     """Adapted from https://github.com/JiahuiYu/slimmable_networks
     """
-    def __init__(self, num_features, bit_list):
+    def __init__(self, num_features, bit_list, affine=True):
         super(SwitchBatchNorm1d, self).__init__()
         self.bit_list = bit_list
         self.bn_dict = nn.ModuleDict()
         for i in self.bit_list:
-            self.bn_dict[str(i)] = nn.BatchNorm1d(num_features)
+            self.bn_dict[str(i)] = nn.BatchNorm1d(num_features, affine=affine)
 
         self.abit = self.bit_list[-1]
         self.wbit = self.bit_list[-1]
@@ -56,10 +56,10 @@ class SwitchBatchNorm1d(nn.Module):
         return x
 
 
-def batchnorm1d_fn(bit_list):
+def batchnorm1d_fn(bit_list, affine=True):
     class SwitchBatchNorm1d_(SwitchBatchNorm1d):
-        def __init__(self, num_features, bit_list=bit_list):
-            super(SwitchBatchNorm1d_, self).__init__(num_features=num_features, bit_list=bit_list)
+        def __init__(self, num_features, bit_list=bit_list, affine=affine):
+            super(SwitchBatchNorm1d_, self).__init__(num_features=num_features, bit_list=bit_list, affine=affine)
 
     return SwitchBatchNorm1d_
 
