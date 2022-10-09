@@ -315,7 +315,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
                         if not l in b_norm_layers:
                             if args.pearson:
-                                slacks[l] = torch.mean((full*q)) - epsilon[bitwidth][l]
+                                slacks[l] = torch.mean((1-full*q)) - epsilon[bitwidth][l]
                             else:
                                 slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth][l]
                             slack_meter[j][l].update(slacks[l].item(), input.size(0))
@@ -404,7 +404,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         for l, (full, q) in enumerate(zip(act_full, act_q)):
                             if not l in b_norm_layers:
                                 if args.pearson:
-                                    const_vec = (full*q)
+                                    const_vec = (1-full*q)
                                 else:
                                     const_vec = torch.abs(full-q)
                                 if const_vec.dim()>1:
