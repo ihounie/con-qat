@@ -47,6 +47,7 @@ parser.add_argument('--grads_wrt_high',  action='store_true')
 parser.add_argument('--normalise_constraint',  action='store_true')
 parser.add_argument('--pearson',  action='store_true')
 parser.add_argument('--wandb_log',  action='store_true')
+parser.add_argument('--only_CE_grads_for_LP_BN', action='store_true')
 args = parser.parse_args()
 
 def get_param_by_name(module,access_string):
@@ -152,6 +153,13 @@ def main():
         lambdas = {bw:torch.ones(num_layers, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
     else:
         lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
+    if args.layerwise_constraint:
+            epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+    else:
+        epsilon = {b: [8*args.epsilon_out/b] for b in bit_width_list}
+    if args.wandb_log:
+        wandb.config.update({"epsilon":epsilon})
+    bit_width_list = get_bit_width_list(args)
     #########################
     # TRAIN LOOP
     ########################
@@ -161,13 +169,13 @@ def main():
         ################
         model.train()
         train_loss, train_prec1, train_prec5, lambdas = forward(train_loader, model,lambdas, criterion, criterion_soft, epoch, True,
-                                                       optimizer, sum_writer)
+                                                       optimizer, sum_writer, epsilon=epsilon, bit_width_list=bit_width_list)
         #######################
         #   Test
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False)
+        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list)
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
@@ -229,14 +237,17 @@ def main():
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, training=True, optimizer=None, sum_writer=None, train_bn=True):
+def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, training=True,
+             optimizer=None, sum_writer=None, train_bn=True, epsilon=None, bit_width_list = None):
+    if bit_width_list is None:
+        bit_width_list = get_bit_width_list(args)
+    if epsilon is None:
+        if args.layerwise_constraint:
+            epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+        else:
+            epsilon = {b: [args.epsilon_out] for b in bit_width_list}
     # Save state to return model in its initial state
     initial_model_state = model.training
-    bit_width_list = get_bit_width_list(args)
-    if args.layerwise_constraint:
-        epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
-    else:
-        epsilon = {b: [args.epsilon_out] for b in bit_width_list}
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
@@ -279,12 +290,16 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     top5[j].update(prec5_q.item(), input.size(0))                
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
-                # compute forward with Low precision model and
-                # Grads enabled
-                act_q = model_q.get_activations(input)
-                if args.normalise_constraint:
+                # compute activations with Low precision model
+                if args.only_CE_grads_for_LP_BN:
                     with torch.no_grad():
-                        act_q_norm= model.norm_act(act_q)
+                        act_q = model_q.get_activations(input)
+                else:
+                    act_q = model_q.get_activations(input)
+                # compute forward with Low precision model
+                if args.normalise_constraint:
+                    act_q_norm= model.norm_act(act_q)
+                # Grads enabled
                 out_q = model_q(input)
                 # Init Slacks
                 slacks = torch.zeros_like(lambdas[bitwidth])
@@ -308,9 +323,8 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     # Normalise activations, with OG model to update stats but no grad,
                     # Bc norm has no learnable params
                     if args.normalise_constraint:
-                        with torch.no_grad():
-                            act_full = model.norm_act(act_full)
-                            act_q = act_q_norm
+                        act_full = model.norm_act(act_full)
+                        act_q = act_q_norm
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
                         if not l in b_norm_layers:
@@ -320,7 +334,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                 slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth][l]
                             slack_meter[j][l].update(slacks[l].item(), input.size(0))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
-                target_soft = torch.nn.functional.softmax(out_q.detach(), dim=1)
 
             loss.backward()
             # Copy BN gradients of low precision copy
