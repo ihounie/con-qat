@@ -33,8 +33,8 @@ parser.add_argument('--epochs', default=200, type=int, help='number of epochs')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')
 parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
 parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
-parser.add_argument('--lr', default=0.1, type=float, help='initial learning rate')
-parser.add_argument('--lr_dual', default=0.1, type=float, help='dual learning rate')
+parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate')
+parser.add_argument('--lr_dual', default=0.01, type=float, help='dual learning rate')
 parser.add_argument('--lr_decay', default='100,150,180', help='lr decay steps')
 parser.add_argument('--epsilon_out', default=0.1, type=float, help='output crossentropy constraint level')
 parser.add_argument('--weight-decay', default=3e-4, type=float, help='weight decay')
@@ -45,6 +45,7 @@ parser.add_argument('--bit_width_list', default='4', help='bit width list')
 parser.add_argument('--layerwise_constraint',  action='store_true')
 parser.add_argument('--grads_wrt_high',  action='store_true')
 parser.add_argument('--normalise_constraint',  action='store_true')
+parser.add_argument('--pearson',  action='store_true')
 parser.add_argument('--wandb_log',  action='store_true')
 args = parser.parse_args()
 
@@ -281,6 +282,9 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 # compute forward with Low precision model and
                 # Grads enabled
                 act_q = model_q.get_activations(input)
+                if args.normalise_constraint:
+                    with torch.no_grad():
+                        act_q_norm= model.norm_act(act_q)
                 out_q = model_q(input)
                 # Init Slacks
                 slacks = torch.zeros_like(lambdas[bitwidth])
@@ -306,11 +310,14 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     if args.normalise_constraint:
                         with torch.no_grad():
                             act_full = model.norm_act(act_full)
-                            act_q = model.norm_act(act_q)
+                            act_q = act_q_norm
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(act_full, act_q)):
                         if not l in b_norm_layers:
-                            slacks[l] = torch.mean(torch.abs(full.detach()-q)) - epsilon[bitwidth][l]
+                            if args.pearson:
+                                slacks[l] = torch.mean((full*q)) - epsilon[bitwidth][l]
+                            else:
+                                slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth][l]
                             slack_meter[j][l].update(slacks[l].item(), input.size(0))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
                 target_soft = torch.nn.functional.softmax(out_q.detach(), dim=1)
@@ -382,6 +389,9 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     if args.layerwise_constraint:
                         model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                         model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                        if args.normalise_constraint:
+                            with torch.no_grad():
+                                act_q_norm = model.norm_act(act_q)
                         act_q = model.get_activations(input)
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
@@ -389,11 +399,14 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         if args.normalise_constraint:
                             with torch.no_grad():
                                 act_full = model.norm_act(act_full)
-                                act_q = model.norm_act(act_q)
+                                act_q = act_q_norm
                         # This will be vectorised
                         for l, (full, q) in enumerate(zip(act_full, act_q)):
                             if not l in b_norm_layers:
-                                const_vec = torch.abs(full-q)
+                                if args.pearson:
+                                    const_vec = (full*q)
+                                else:
+                                    const_vec = torch.abs(full-q)
                                 if const_vec.dim()>1:
                                     const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                                 else:
