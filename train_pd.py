@@ -389,10 +389,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     if args.layerwise_constraint:
                         model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                         model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                        act_q = model.get_activations(input)
                         if args.normalise_constraint:
                             with torch.no_grad():
                                 act_q_norm = model.norm_act(act_q)
-                        act_q = model.get_activations(input)
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
                         act_full = model.eval_layers(input, act_q)
