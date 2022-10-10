@@ -150,7 +150,9 @@ def main():
     # Tensor w/One dual variable per layer
     # For each low precision bitwidth
     if args.layerwise_constraint:
-        lambdas = {bw:torch.ones(num_layers, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
+        lambdas = {bw:torch.zeros(num_layers+1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
+        for bw in bit_width_list[:-1]:
+            lambdas[bw][-1] = 1
     else:
         lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
     if args.layerwise_constraint:
