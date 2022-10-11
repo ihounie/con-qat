@@ -45,7 +45,8 @@ parser.add_argument('--bit_width_list', default='4', help='bit width list')
 parser.add_argument('--layerwise_constraint',  action='store_true')
 parser.add_argument('--grads_wrt_high',  action='store_true')
 parser.add_argument('--normalise_constraint',  action='store_true')
-parser.add_argument('--pearson',  action='store_true')
+parser.add_argument('--constraint_norm', default='L2', help='L2, L1')
+parser.add_argument('--pearson', action='store_true', help="use pearson instead of dif norm")
 parser.add_argument('--wandb_log',  action='store_true')
 parser.add_argument('--only_CE_grads_for_LP_BN', action='store_true')
 args = parser.parse_args()
@@ -145,7 +146,7 @@ def main():
     sum_writer = SummaryWriter(args.results_dir + '/summary')   
     num_layers = model.get_num_layers()
     #########################
-    # DUAL INIT
+    # EPSILON and DUAL INIT
     ########################
     # Tensor w/One dual variable per layer
     # For each low precision bitwidth
@@ -156,12 +157,24 @@ def main():
     else:
         lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
     if args.layerwise_constraint:
+        if args.constraint_norm=="L2":
+            epsilon = {b: [ 1/((2**b)-1)**2 for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+        else:
             epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
     else:
         epsilon = {b: [8*args.epsilon_out/b] for b in bit_width_list}
     if args.wandb_log:
         wandb.config.update({"epsilon":epsilon})
-    bit_width_list = get_bit_width_list(args)
+
+    #########################
+    # Constraint norm
+    ########################
+    if args.constraint_norm=="L2":
+        norm_func = torch.square
+    elif args.constraint_norm=="L1":
+        norm_func = torch.abs
+    else:
+        raise NotImplementedError  
     #########################
     # TRAIN LOOP
     ########################
@@ -171,13 +184,14 @@ def main():
         ################
         model.train()
         train_loss, train_prec1, train_prec5, lambdas = forward(train_loader, model,lambdas, criterion, criterion_soft, epoch, True,
-                                                       optimizer, sum_writer, epsilon=epsilon, bit_width_list=bit_width_list)
+                                                                optimizer, sum_writer,constraint_norm=norm_func, epsilon=epsilon,
+                                                                bit_width_list=bit_width_list)
         #######################
         #   Test
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list)
+        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func)
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
@@ -239,8 +253,9 @@ def main():
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, training=True,
-             optimizer=None, sum_writer=None, train_bn=True, epsilon=None, bit_width_list = None):
+def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, training=True, 
+             optimizer=None, sum_writer=None, train_bn=True, epsilon=None, 
+             bit_width_list = None, constraint_norm=torch.square):
     if bit_width_list is None:
         bit_width_list = get_bit_width_list(args)
     if epsilon is None:
@@ -299,7 +314,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 else:
                     act_q = model_q.get_activations(input)
                 # compute forward with Low precision model
-                if args.normalise_constraint:
+                if args.normalise_constraint or args.pearson:
                     act_q_norm= model.norm_act(act_q)
                 # Grads enabled
                 out_q = model_q(input)
@@ -324,7 +339,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     model.train()
                     # Normalise activations, with OG model to update stats but no grad,
                     # Bc norm has no learnable params
-                    if args.normalise_constraint:
+                    if args.normalise_constraint or args.pearson:
                         act_full = model.norm_act(act_full)
                         act_q = act_q_norm
                     # This will be vectorised
@@ -333,7 +348,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                             if args.pearson:
                                 slacks[l] = torch.mean((1-full*q)) - epsilon[bitwidth][l]
                             else:
-                                slacks[l] = torch.mean(torch.abs(full-q)) - epsilon[bitwidth][l]
+                                slacks[l] = torch.mean(constraint_norm(full-q)) - epsilon[bitwidth][l]
                             slack_meter[j][l].update(slacks[l].item(), input.size(0))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
 
@@ -405,13 +420,13 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                         model.apply(lambda m: setattr(m, 'abit', bitwidth))
                         act_q = model.get_activations(input)
-                        if args.normalise_constraint:
+                        if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
                                 act_q_norm = model.norm_act(act_q)
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
                         act_full = model.eval_layers(input, act_q)
-                        if args.normalise_constraint:
+                        if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
                                 act_full = model.norm_act(act_full)
                                 act_q = act_q_norm
@@ -421,7 +436,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                 if args.pearson:
                                     const_vec = (1-full*q)
                                 else:
-                                    const_vec = torch.abs(full-q)
+                                    const_vec = constraint_norm(full-q)
                                 if const_vec.dim()>1:
                                     const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                                 else:
