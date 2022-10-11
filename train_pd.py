@@ -48,7 +48,7 @@ parser.add_argument('--normalise_constraint',  action='store_true')
 parser.add_argument('--constraint_norm', default='L2', help='L2, L1')
 parser.add_argument('--pearson', action='store_true', help="use pearson instead of dif norm")
 parser.add_argument('--wandb_log',  action='store_true')
-parser.add_argument('--only_CE_grads_for_LP_BN', action='store_true')
+parser.add_argument('--project',  default='ConQAT', type=str, help='wandb Project name')
 args = parser.parse_args()
 
 def get_param_by_name(module,access_string):
@@ -72,7 +72,7 @@ def main():
     #   LOGGING
     #####################
     if args.wandb_log:
-        wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
+        wandb.init(project=args.project,entity="alelab", name=args.results_dir.split('/')[-1])
         wandb.config.update(args)
     hostname = socket.gethostname()
     setup_logging(os.path.join(args.results_dir, 'log_{}.txt'.format(hostname)))
@@ -191,7 +191,7 @@ def main():
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func)
+        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon)
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
@@ -258,11 +258,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
              bit_width_list = None, constraint_norm=torch.square):
     if bit_width_list is None:
         bit_width_list = get_bit_width_list(args)
-    if epsilon is None:
-        if args.layerwise_constraint:
-            epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
-        else:
-            epsilon = {b: [args.epsilon_out] for b in bit_width_list}
     # Save state to return model in its initial state
     initial_model_state = model.training
     losses = [AverageMeter() for _ in bit_width_list]
@@ -308,14 +303,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
                 # compute activations with Low precision model
-                if args.only_CE_grads_for_LP_BN:
-                    with torch.no_grad():
-                        act_q = model_q.get_activations(input)
-                else:
-                    act_q = model_q.get_activations(input)
+                act_q = model_q.get_activations(input)
                 # compute forward with Low precision model
                 if args.normalise_constraint or args.pearson:
-                    act_q_norm= model.norm_act(act_q)
+                    act_q_norm = model.norm_act(act_q)
                 # Grads enabled
                 out_q = model_q(input)
                 # Init Slacks
@@ -331,10 +322,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     model.eval()
                     # Compute Full Prec layer outputs with Low Prec Activations as inputs
                     if args.grads_wrt_high:
-                        act_full = model.eval_layers(input, act_q)
+                        act_full = model.get_activations(input)
                     else:
                         with torch.no_grad():
-                            act_full = model.eval_layers(input, act_q)
+                            act_full =  model.get_activations(input)
                     # Unfreeze stats
                     model.train()
                     # Normalise activations, with OG model to update stats but no grad,
@@ -425,7 +416,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                 act_q_norm = model.norm_act(act_q)
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
-                        act_full = model.eval_layers(input, act_q)
+                        act_full =  model.get_activations(input)
                         if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
                                 act_full = model.norm_act(act_full)
