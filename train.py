@@ -203,10 +203,10 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                     cem.update(criterion_soft(output, target_soft).item(), input.size(0))
 
                     for l in range(model.get_num_layers()):
-                        l2m[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l]).item()), input.size(0))
-                        l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l]).item()), input.size(0))
-                        rm[l].update(torch.mean((act_q_norm[l]*act_full_fromq_norm[l]).item()), input.size(0))
-                        rhlm[l].update(torch.mean((act_q_norm[l]*act_full_norm[l]).item()), input.size(0))                    
+                        l2m[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
+                        l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l])).item(), input.size(0))
+                        rm[l].update(torch.mean((act_q_norm[l]*act_full_fromq_norm[l])).item(), input.size(0))
+                        rhlm[l].update(torch.mean((act_q_norm[l]*act_full_norm[l])).item(), input.size(0))                    
         else:
             input = input.cuda()
             target = target.cuda(non_blocking=True)
