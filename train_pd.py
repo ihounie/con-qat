@@ -193,7 +193,7 @@ def main():
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon)
+        val_loss, val_prec1, val_prec5, slack_val = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon)
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
@@ -234,7 +234,7 @@ def main():
         #   W&B Logging
         ###############################
         if args.wandb_log:
-            for bw, tl, tp1, vl, vp1 in zip(bit_width_list, train_loss, train_prec1, val_loss, val_prec1):
+            for bw, tl, tp1, vl, vp1, sl in zip(bit_width_list, train_loss, train_prec1, val_loss, val_prec1, slack_val):
                 wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
                 wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
                 wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
@@ -245,6 +245,7 @@ def main():
                     wandb.log({"dual_vars": hist, "epoch":epoch })
                     for l in range(len(lambdas[bw])-1):
                         wandb.log({f"dual_layer_{l}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
+                        wandb.log({f'slack_layer_{l}_bw_{bw}_test':sl[l], "epoch":epoch})
                     wandb.log({f"dual_CE_bw_{bw}": lambdas[bw][-1].item(), "epoch":epoch })
                     print(f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
         ####################
@@ -265,7 +266,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
-    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list[:-1]]
+    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list]
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
@@ -377,7 +378,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             with torch.no_grad():
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
-                for bw, am_l, am_t1, am_t5 in zip(bit_width_list, losses, top1, top5):
+                model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
+                model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
+                act_full = 
+                for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
                     model.apply(lambda m: setattr(m, 'wbit', bw))
                     model.apply(lambda m: setattr(m, 'abit', bw))
                     output = model(input)
@@ -386,6 +390,14 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_l.update(loss.item(), input.size(0))
                     am_t1.update(prec1.item(), input.size(0))
                     am_t5.update(prec5.item(), input.size(0))
+                    act_q = model.get_activations(input)
+                    act_q_norm = model.norm_act(act_q)
+                    act_full_fromq = model.eval_layers(input, act_q)
+                    act_full_fromq_norm = model.norm_act(act_full_fromq)
+                    cem.update(criterion_soft(output, target_soft).item(), input.size(0))
+                    slm[-1].update(slacks[-1].item(), input.size(0))
+                    for l in range(model.get_num_layers()):
+                        slm[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
     if training:
         # Dual Update
         # Update low precision BN stats to mitigate oscilations
@@ -454,7 +466,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     else:
         if initial_model_state:
             model.train()
-        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]
+        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], [[l.avg for l in _] for _ in slack_meter]
 
 
 if __name__ == '__main__':
