@@ -282,7 +282,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
-    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list]
+    slack_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
@@ -304,7 +304,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             top5[-1].update(prec5.item(), input.size(0))
             # Evaluate slack
             # We exlude the highest precision (bit_width_list[:-1])
-            target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+            if args.grads_wrt_high:
+                target_soft = torch.nn.functional.softmax(output, dim=1)
+            else:
+                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
             for j, bitwidth in enumerate(bit_width_list[:-1]):
                 # Forward pass to update bn stats
                 with torch.no_grad():
@@ -399,7 +402,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 act_full = model.get_activations(input)
                 output = model(input)
                 target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
-                
                 for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
                     model.apply(lambda m: setattr(m, 'wbit', bw))
                     model.apply(lambda m: setattr(m, 'abit', bw))
@@ -410,11 +412,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_t1.update(prec1.item(), input.size(0))
                     am_t5.update(prec5.item(), input.size(0))
                     act_q = model.get_activations(input)
-
-                    act_full_fromq = model.eval_layers(input, act_q)
                     slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
                     for l in range(model.get_num_layers()):
-                        slm[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
+                        slack =  torch.mean(torch.square(act_q[l]-act_full[l]))- epsilon[bw][l]
+                        slm[l].update(slack.item(), input.size(0))
     if training:
         # Dual Update
         model.eval()
