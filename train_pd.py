@@ -390,7 +390,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     for name, param in model.named_parameters():
                         if "bn" in name:
                             wandb.log({name: param.data, f'{name}_grad': param.grad})
-
         else:
             # Just compute forward passes
             model.eval()
@@ -418,6 +417,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         slm[l].update(slack.item(), input.size(0))
     if training:
         # Dual Update
+        model.eval()
         print("Peforming Dual Update...")
         for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
             with torch.no_grad():
@@ -427,20 +427,14 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     # Pairwise CE Constraint between neighboring precision levels
                     # (If only one low precision level is used, its just high and Low)
                     # compute targets
-                    model.eval()
                     model.apply(lambda m: setattr(m, 'wbit',bit_width_list[-1] ))
                     model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
                     output = model(input)
                     target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
-                    # Set model to Low Precision
-                    if bitwidth!=32:
-                        model.train()
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
                     # Compute forward
                     out_q = model(input)
-                    if bitwidth!=32:
-                        model.eval()
                     # Eval slack
                     slacks[-1] += (criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1])*input.size(0)
                     if args.layerwise_constraint:
@@ -449,17 +443,13 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         act_q = model.get_activations(input)
                         if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
-                                model.train()
                                 act_q_norm = model.norm_act(act_q)
-                                model.eval()
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
                         act_full =  model.get_activations(input)
                         if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
-                                model.train()
                                 act_full = model.norm_act(act_full)
-                                model.eval()
                                 act_q = act_q_norm
                         # This will be vectorised
                         for l, (full, q) in enumerate(zip(act_full, act_q)):
