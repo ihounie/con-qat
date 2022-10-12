@@ -49,6 +49,8 @@ parser.add_argument('--constraint_norm', default='L2', help='L2, L1')
 parser.add_argument('--pearson', action='store_true', help="use pearson instead of dif norm")
 parser.add_argument('--wandb_log',  action='store_true')
 parser.add_argument('--project',  default='ConQAT', type=str, help='wandb Project name')
+parser.add_argument('--epsilonlw', default=1/(2**8-1), type = float, help='layer constraint tightness')
+
 args = parser.parse_args()
 
 def get_param_by_name(module,access_string):
@@ -72,7 +74,7 @@ def main():
     #   LOGGING
     #####################
     if args.wandb_log:
-        wandb.init(project=args.project,entity="alelab", name=args.results_dir.split('/')[-1])
+        wandb.init(project=args.project, entity="alelab", name=args.results_dir.split('/')[-1])
         wandb.config.update(args)
     hostname = socket.gethostname()
     setup_logging(os.path.join(args.results_dir, 'log_{}.txt'.format(hostname)))
@@ -158,9 +160,9 @@ def main():
         lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
     if args.layerwise_constraint:
         if args.constraint_norm=="L2":
-            epsilon = {b: [ 1/((2**b)-1)**2 for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+            epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
         else:
-            epsilon = {b: [ 1/((2**b)-1) for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+            epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
     else:
         epsilon = {b: [8*args.epsilon_out/b] for b in bit_width_list}
     if args.wandb_log:
