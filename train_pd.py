@@ -84,6 +84,8 @@ def get_bit_width_list(args):
     return bit_width_list
 
 def main():
+    
+    seed_everything(args.seed)
     #####################
     #   LOGGING
     #####################
