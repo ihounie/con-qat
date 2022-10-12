@@ -18,10 +18,9 @@ class Activate(nn.Module):
             self.quan = activation_quantize_fn(self.bit_list)
 
     def forward(self, x):
-        if self.abit == 32:
-            x = self.acti(x)
-        else:
-            x = torch.clamp(x, 0.0, 1.0)
+        x = self.acti(x)
+        if self.abit != 32:
+            x = x/torch.amax(x, [0,]+[i for i in range(2, x.dim())], keepdim=True)
         if self.quantize:
             x = self.quan(x)
         return x
