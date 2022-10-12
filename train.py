@@ -25,7 +25,7 @@ import wandb
 
 def main(args):
     if args.wandb_log:
-        wandb.init(project="con-qat", name=args.results_dir.split('/')[-1])
+        wandb.init(project=args.project, entity="alelab", name=args.results_dir.split('/')[-1])
         wandb.config.update(args)
     hostname = socket.gethostname()
     setup_logging(os.path.join(args.results_dir, 'log_{}.txt'.format(hostname)))
@@ -53,7 +53,8 @@ def main(args):
 
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
-    model = models.__dict__[args.model](bit_width_list, train_data.num_classes).cuda()
+    model = models.__dict__[args.model]([1,2,4,8,32], train_data.num_classes).cuda()
+    model.bn_to_cuda()
 
     lr_decay = list(map(int, args.lr_decay.split(',')))
     optimizer = get_optimizer_config(model, args.optimizer, args.lr, args.weight_decay)
@@ -95,9 +96,8 @@ def main(args):
         train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, args, True,
                                                        optimizer, sum_writer)
         model.eval()
-        val_loss, val_prec1, val_prec5 = forward(val_loader, model, criterion, criterion_soft, epoch, args, False)
-        if args.wandb_log:
-            wandb.log({"test_loss": val_loss[-1],"test_acc":val_prec1[-1], "epoch":epoch })
+        train_loss, train_prec1, train_prec5, train_pearson, train_pearson_hl, train_l2, train_l2_hl, train_ce = forward(train_loader, model, criterion, criterion_soft, epoch, args, False)
+        val_loss, val_prec1, val_prec5, val_pearson, val_pearson_hl, val_l2, val_l2_hl, val_ce = forward(val_loader, model, criterion, criterion_soft, epoch, args, False)
 
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
@@ -132,12 +132,25 @@ def main(args):
                 sum_writer.add_scalar('val_prec_1_{}'.format(bw), vp1, global_step=epoch)
                 sum_writer.add_scalar('val_prec_5_{}'.format(bw), vp5, global_step=epoch)
         if args.wandb_log:
-            for bw, tl, tp1, tp5, vl, vp1, vp5 in zip(bit_width_list, train_loss, train_prec1, train_prec5, val_loss,
-                                                      val_prec1, val_prec5):
+            for bw, tl, tp1, tp5, tce, vl, vp1, vp5, vce in zip([1,2,4,8,32], train_loss, train_prec1, train_prec5, train_ce, val_loss,
+                                                      val_prec1, val_prec5, val_ce):
                 wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
                 wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
                 wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
                 wandb.log({f'test_acc_{bw}':vp1, "epoch":epoch})
+                wandb.log({f'train_CE_{bw}':tce, "epoch":epoch})
+                wandb.log({f'test_CE_{bw}':vce, "epoch":epoch})
+            for bw, tr_p, tr_p_hl, tr_l2, tr_l2_hl,te_p, te_p_hl, te_l2, te_l2_hl \
+            in zip([1,2,4,8, 32], train_pearson, train_pearson_hl, train_l2, train_l2_hl, val_pearson, val_pearson_hl, val_l2, val_l2_hl):
+                for l in range(model.get_num_layers()):
+                    wandb.log({f'train_pearson_layer_{l}_bw_{bw}':tr_p[l], "epoch":epoch})
+                    wandb.log({f'train_pearson_layer_{l}_bw_{bw}_hl':tr_p_hl[l], "epoch":epoch})
+                    wandb.log({f'test_pearson_layer_{l}_bw_{bw}':te_p[l], "epoch":epoch})
+                    wandb.log({f'test_pearson_layer_{l}_bw_{bw}_hl':te_p_hl[l], "epoch":epoch})
+                    wandb.log({f'train_l2_layer_{l}_bw_{bw}':tr_l2[l], "epoch":epoch})
+                    wandb.log({f'train_l2_layer_{l}_bw_{bw}_hl':tr_l2_hl[l], "epoch":epoch})
+                    wandb.log({f'test_l2_layer_{l}_bw_{bw}':te_l2[l], "epoch":epoch})
+                    wandb.log({f'test_l2_layer_{l}_bw_{bw}_hl':te_l2_hl[l], "epoch":epoch})
 
         logging.info('Epoch {}: \ntrain loss {:.2f}, train prec1 {:.2f}, train prec5 {:.2f}\n'
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
@@ -146,29 +159,54 @@ def main(args):
 
 
 def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, sum_writer=None):
-    bit_width_list = list(map(int, args.bit_width_list.split(',')))
-    bit_width_list.sort()
-
+    if training:
+        bit_width_list = list(map(int, args.bit_width_list.split(',')))
+        bit_width_list.sort()
+    else:
+        bit_width_list = [1, 2, 4, 8, 32]
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
-
+    l2_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
+    l2_hl_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
+    pearson_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
+    pearson_hl_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
+    CE_meter = [AverageMeter() for b in bit_width_list[:-1]]
     for i, (input, target) in enumerate(data_loader):
         if not training:
             with torch.no_grad():
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
-
-                for bw, am_l, am_t1, am_t5 in zip(bit_width_list, losses, top1, top5):
+                bw = bit_width_list[-1]
+                model.apply(lambda m: setattr(m, 'wbit', bw))
+                model.apply(lambda m: setattr(m, 'abit', bw))
+                output = model(input)
+                act_full = model.get_activations(input)
+                act_full_norm = model.norm_act(act_full)
+                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                for bw, am_l, am_t1, am_t5, l2m, l2hlm, rm, rhlm, cem in zip(bit_width_list, losses, top1,
+                                                                 top5, l2_meter,l2_hl_meter,pearson_meter, pearson_hl_meter, CE_meter):
                     model.apply(lambda m: setattr(m, 'wbit', bw))
                     model.apply(lambda m: setattr(m, 'abit', bw))
                     output = model(input)
                     loss = criterion(output, target)
-
                     prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+                    act_q = model.get_activations(input)
+                    act_q_norm = model.eval_layers(input, act_full)
                     am_l.update(loss.item(), input.size(0))
                     am_t1.update(prec1.item(), input.size(0))
                     am_t5.update(prec5.item(), input.size(0))
+                    act_q = model.get_activations(input)
+                    act_q_norm = model.norm_act(act_q)
+                    act_full_fromq = model.eval_layers(input, act_q)
+                    act_full_fromq_norm = model.norm_act(act_full_fromq)
+                    cem.update(criterion_soft(output, target_soft).item(), input.size(0))
+
+                    for l in range(model.get_num_layers()):
+                        l2m[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
+                        l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l])).item(), input.size(0))
+                        rm[l].update(torch.mean((act_q_norm[l]*act_full_fromq_norm[l])).item(), input.size(0))
+                        rhlm[l].update(torch.mean((act_q_norm[l]*act_full_norm[l])).item(), input.size(0))                    
         else:
             input = input.cuda()
             target = target.cuda(non_blocking=True)
@@ -185,11 +223,15 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
             losses[-1].update(loss.item(), input.size(0))
             top1[-1].update(prec1.item(), input.size(0))
             top5[-1].update(prec5.item(), input.size(0))
-
+            # Comp acts for slack
+            with torch.no_grad():
+                model.eval()
+                act_full = model.get_activations(input)
+                model.train()
             # train less-bit-wdith models
             target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
-            for bw, am_l, am_t1, am_t5 in zip(bit_width_list[:-1][::-1], losses[:-1][::-1], top1[:-1][::-1],
-                                              top5[:-1][::-1]):
+            for bw, am_l, am_t1, am_t5 in zip(bit_width_list[:-1][::-1], losses[:-1][::-1],\
+                                                     top1[:-1][::-1], top5[:-1][::-1]):
                 model.apply(lambda m: setattr(m, 'wbit', bw))
                 model.apply(lambda m: setattr(m, 'abit', bw))
                 output = model(input)
@@ -207,8 +249,12 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
                     epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
-
-    return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]
+    if training:
+        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5]
+    else:
+        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], \
+             [[l.avg for l in _] for _ in pearson_meter], [[l.avg for l in _] for _ in pearson_hl_meter], \
+             [[l.avg for l in _] for _ in l2_meter], [[l.avg for l in _] for _ in l2_hl_meter], [_.avg for _ in CE_meter]
 
 
 if __name__ == '__main__':
@@ -230,5 +276,6 @@ if __name__ == '__main__':
     parser.add_argument('--resume', default=None, help='path to latest checkpoint')
     parser.add_argument('--bit_width_list', default='4', help='bit width list')
     parser.add_argument('--wandb_log',  action='store_true')
+    parser.add_argument('--project',  default='Baselines', type=str, help='wandb Project name')
     args = parser.parse_args()
     main(args)
