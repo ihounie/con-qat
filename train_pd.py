@@ -417,8 +417,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         slm[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
     if training:
         # Dual Update
-        # Update low precision BN stats to mitigate oscilations
-        model.train()
+        model.eval()
         print("Peforming Dual Update...")
         for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
             with torch.no_grad():
@@ -430,13 +429,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     # compute targets
                     model.apply(lambda m: setattr(m, 'wbit', bit_width_list[bw_idx-1]))
                     model.apply(lambda m: setattr(m, 'abit', bit_width_list[bw_idx-1]))
-                    if bw_idx==0:
-                        #Freeze full precision batchnorm stats
-                        model.eval()
                     output = model(input)
-                    if bw_idx==0:
-                        #Unfreeze full precision batchnorm stats
-                        model.train()
                     target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
                     # Set model to Low Precision
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
@@ -454,15 +447,11 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                 act_q_norm = model.norm_act(act_q)
                         model.apply(lambda m: setattr(m, 'wbit', 32))
                         model.apply(lambda m: setattr(m, 'abit', 32))
-                        #Freeze full precision batchnorm stats
-                        model.eval()
                         act_full =  model.get_activations(input)
                         if args.normalise_constraint or args.pearson:
                             with torch.no_grad():
                                 act_full = model.norm_act(act_full)
                                 act_q = act_q_norm
-                        #Unfreeze full precision batchnorm stats
-                        model.train()
                         # This will be vectorised
                         for l, (full, q) in enumerate(zip(act_full, act_q)):
                             if not l in b_norm_layers:
