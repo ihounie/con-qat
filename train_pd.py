@@ -12,6 +12,8 @@ import torch.optim
 import torch.utils.data
 from torch.autograd import Variable
 from tensorboardX import SummaryWriter
+import random
+import numpy as np
 
 import models
 from models.losses import CrossEntropyLossSoft
@@ -19,6 +21,7 @@ from datasets.data import get_dataset, get_transform
 from optimizer import get_optimizer_config, get_lr_scheduler
 from utils import setup_logging, setup_gpus, save_checkpoint
 from utils import AverageMeter, accuracy
+
 
 import wandb
 import copy
@@ -50,8 +53,19 @@ parser.add_argument('--pearson', action='store_true', help="use pearson instead 
 parser.add_argument('--wandb_log',  action='store_true')
 parser.add_argument('--project',  default='ConQAT', type=str, help='wandb Project name')
 parser.add_argument('--epsilonlw', default=1/(2**8-1), type = float, help='layer constraint tightness')
+parser.add_argument('--seed', default=42, type=int)
 
 args = parser.parse_args()
+
+def seed_everything(seed: int):    
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def get_param_by_name(module,access_string):
     """Retrieve a module nested in another by its access string.
@@ -380,7 +394,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 target = target.cuda(non_blocking=True)
                 model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
                 model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
-                act_full = 
+                act_full = model.get_activations(input)
+                output = model(input)
+                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                
                 for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
                     model.apply(lambda m: setattr(m, 'wbit', bw))
                     model.apply(lambda m: setattr(m, 'abit', bw))
@@ -391,11 +408,9 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_t1.update(prec1.item(), input.size(0))
                     am_t5.update(prec5.item(), input.size(0))
                     act_q = model.get_activations(input)
-                    act_q_norm = model.norm_act(act_q)
+
                     act_full_fromq = model.eval_layers(input, act_q)
-                    act_full_fromq_norm = model.norm_act(act_full_fromq)
-                    cem.update(criterion_soft(output, target_soft).item(), input.size(0))
-                    slm[-1].update(slacks[-1].item(), input.size(0))
+                    slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
                     for l in range(model.get_num_layers()):
                         slm[l].update(torch.mean(torch.square(act_q[l]-act_full_fromq[l])).item(), input.size(0))
     if training:
