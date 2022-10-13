@@ -174,13 +174,9 @@ def main():
             lambdas[bw][-1] = 1
     else:
         lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
-    if args.layerwise_constraint:
-        if args.constraint_norm=="L2":
-            epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
-        else:
-            epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
-    else:
-        epsilon = {b: [args.epsilon_out] for b in bit_width_list}
+    
+    epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
+
     if args.wandb_log:
         wandb.config.update({"epsilon":epsilon})
 
@@ -201,7 +197,7 @@ def main():
         #  Train Epoch
         ################
         model.train()
-        train_loss, train_prec1, train_prec5, lambdas = forward(train_loader, model,lambdas, criterion, criterion_soft, epoch, True,
+        train_loss, train_prec1, train_prec5, slack_train, lambdas = forward(train_loader, model,lambdas, criterion, criterion_soft, epoch, True,
                                                                 optimizer, sum_writer,constraint_norm=norm_func, epsilon=epsilon,
                                                                 bit_width_list=bit_width_list)
         #######################
@@ -250,7 +246,7 @@ def main():
         #   W&B Logging
         ###############################
         if args.wandb_log:
-            for bw, tl, tp1, vl, vp1, sl in zip(bit_width_list, train_loss, train_prec1, val_loss, val_prec1, slack_val):
+            for bw, tl, tp1, tsl, vl, vp1, vsl in zip(bit_width_list, train_loss, train_prec1, slack_train, val_loss, val_prec1, slack_val):
                 wandb.log({f'train_loss_{bw}':tl, "epoch":epoch})
                 wandb.log({f'train_acc_{bw}':tp1, "epoch":epoch})
                 wandb.log({f'test_loss_{bw}':vl, "epoch":epoch})
@@ -261,7 +257,10 @@ def main():
                     wandb.log({"dual_vars": hist, "epoch":epoch })
                     for l in range(len(lambdas[bw])-1):
                         wandb.log({f"dual_layer_{l}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
-                        wandb.log({f'slack_layer_{l}_bw_{bw}_test':sl[l], "epoch":epoch})
+                        wandb.log({f'slack_layer_{l}_bw_{bw}_train':tsl[l], "epoch":epoch})
+                        wandb.log({f'slack_layer_{l}_bw_{bw}_test':vsl[l], "epoch":epoch})
+                    wandb.log({f'slack_CE_bw_{bw}_train': tsl[-1], "epoch":epoch})
+                    wandb.log({f'slack_CE_bw_{bw}_test': vsl[-1], "epoch":epoch})
                     wandb.log({f"dual_CE_bw_{bw}": lambdas[bw][-1].item(), "epoch":epoch })
                     print(f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
         ####################
@@ -282,7 +281,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
-    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list]
+    slack_meter = [[AverageMeter() for _ in range(model.get_num_layers()+1)] for b in bit_width_list]
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
@@ -297,11 +296,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
             output = model(input)
             loss = criterion(output, target)
-            # Evaluate and log Acc
-            prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-            losses[-1].update(loss.item(), input.size(0))
-            top1[-1].update(prec1.item(), input.size(0))
-            top5[-1].update(prec5.item(), input.size(0))
             # Evaluate slack
             # We exlude the highest precision (bit_width_list[:-1])
             if args.grads_wrt_high:
@@ -316,12 +310,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
                     # Compute forward
                     out_q = model(input)
-                    loss_q = criterion(out_q, target)
-                    # Compute and log loss and acc
-                    prec1_q, prec5_q = accuracy(out_q.data, target, topk=(1, 5)) 
-                    losses[j].update(loss_q.item(), input.size(0))
-                    top1[j].update(prec1_q.item(), input.size(0))
-                    top5[j].update(prec5_q.item(), input.size(0))                
+                    loss_q = criterion(out_q, target)        
                 # low precision clone to compute grads
                 model_q = copy.deepcopy(model)
                 # compute activations with Low precision model
@@ -335,7 +324,6 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 slacks = torch.zeros_like(lambdas[bitwidth])
                 # Output Constraint
                 slacks[-1] = criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1]
-                slack_meter[j][-1].update(slacks[-1].item(), input.size(0))
                 # Set model to Full Precision
                 model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
                 model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
@@ -375,21 +363,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             optimizer.step()
             # Logging and printing
             if i % args.print_freq == 0:
-                logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}, slacklCE{6:.2f}'.format(
-                    epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val, slack_meter[0][-1].val))
-                if args.wandb_log:
-                    for tacc, tl, bw in zip(top1, losses, bit_width_list):
-                        wandb.log({f'trainloss_{bw}':tl.avg, "epoch":epoch})
-                        wandb.log({f'trainacc_{bw}':tacc.avg, "epoch":epoch})
-                    for sl, bw in zip(slack_meter, bit_width_list[:-1]):
-                        for l in range(len(lambdas[bw])-1):
-                            wandb.log({f"slack_layer_{l}_bw_{bw}": sl[l].avg, "epoch":epoch })
-                        wandb.log({f"slack_CE_bw_{bw}": sl[-1].avg, "epoch":epoch})     
-                    for bw in bit_width_list[:-1]:
-                        wandb.log({'model_bn_mean': model.bn.bn_dict[str(bw)].running_mean, 'model_bn_var': model.bn.bn_dict[str(bw)].running_var})
-                    for name, param in model.named_parameters():
-                        if "bn" in name:
-                            wandb.log({name: param.data, f'{name}_grad': param.grad})
+                logging.info('epoch {0}, iter {1}/{2}'.format(epoch, i, len(data_loader)))
         else:
             # Just compute forward passes
             model.eval()
@@ -412,46 +386,51 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_t5.update(prec5.item(), input.size(0))
                     act_q = model.get_activations(input)
                     slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
-                    if args.layerwise_constraint:
-                        for l in range(model.get_num_layers()):
-                            slack =  torch.mean(torch.square(act_q[l]-act_full[l])) - epsilon[bw][l]
-                            slm[l].update(slack.item(), input.size(0))
+                    for l in range(model.get_num_layers()):
+                        slack =  torch.mean(torch.square(act_q[l]-act_full[l])) - epsilon[bw][l]
+                        slm[l].update(slack.item(), input.size(0))
     if training:
         # Dual Update
         model.eval()
         print("Peforming Dual Update...")
-        for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
-            with torch.no_grad():
-                slacks = torch.zeros_like(lambdas[bitwidth])
-                for i, (input, target) in enumerate(data_loader):
-                    input = input.cuda()
-                    # Pairwise CE Constraint between neighboring precision levels
-                    # (If only one low precision level is used, its just high and Low)
-                    # compute targets
-                    model.apply(lambda m: setattr(m, 'wbit',bit_width_list[-1] ))
-                    model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
-                    output = model(input)
-                    target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+        with torch.no_grad():
+            slacks = {bitwidth: torch.zeros_like(lambdas[bitwidth]) for bitwidth in bit_width_list[:-1]}
+            for i, (input, target) in enumerate(data_loader):
+                input, target = input.cuda(), target.cuda(non_blocking=True)
+                # High precision
+                model.apply(lambda m: setattr(m, 'wbit',bit_width_list[-1] ))
+                model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
+                output = model(input)
+                loss = criterion(output, target)
+                prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+                losses[-1].update(loss.item(), input.size(0))
+                top1[-1].update(prec1.item(), input.size(0))
+                top5[-1].update(prec5.item(), input.size(0))
+                act_full = model.get_activations(input)
+                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                # Low precision
+                for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                     model.apply(lambda m: setattr(m, 'abit', bitwidth))
                     # Compute forward
                     out_q = model(input)
                     # Eval slack
-                    slacks[-1] += (criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1])*input.size(0)
+                    slacks[bitwidth][-1] += (criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1])*input.size(0)
                     if args.layerwise_constraint:
                         model.apply(lambda m: setattr(m, 'wbit', bitwidth))
                         model.apply(lambda m: setattr(m, 'abit', bitwidth))
                         act_q = model.get_activations(input)
                         if args.normalise_constraint or args.pearson:
-                            with torch.no_grad():
-                                act_q_norm = model.norm_act(act_q)
-                        model.apply(lambda m: setattr(m, 'wbit', 32))
-                        model.apply(lambda m: setattr(m, 'abit', 32))
-                        act_full =  model.get_activations(input)
+                            model.train()
+                            act_q_norm = model.norm_act(act_q)
+                            model.eval()
                         if args.normalise_constraint or args.pearson:
-                            with torch.no_grad():
-                                act_full = model.norm_act(act_full)
-                                act_q = act_q_norm
+                            model.apply(lambda m: setattr(m, 'wbit', 32))
+                            model.apply(lambda m: setattr(m, 'abit', 32))
+                            model.train()
+                            act_full = model.norm_act(act_full)
+                            model.eval()
+                            act_q = act_q_norm
                         # This will be vectorised
                         for l, (full, q) in enumerate(zip(act_full, act_q)):
                             if not l in b_norm_layers:
@@ -463,12 +442,15 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                                     const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
                                 else:
                                     const = const_vec
-                                slacks[l] += torch.sum(const-epsilon[bitwidth][l])
-                slacks = slacks/len(data_loader.dataset)
-                lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks)
+                                slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
+                for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
+                    slacks[bitwidth] = slacks[bitwidth]/len(data_loader.dataset)
+                    lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth])
+                    for l in range(len(slacks[bitwidth])):
+                        slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), input.size(0))
         if initial_model_state:
             model.train()
-        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], lambdas
+        return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], [[l.avg for l in _] for _ in slack_meter], lambdas
     else:
         if initial_model_state:
             model.train()
