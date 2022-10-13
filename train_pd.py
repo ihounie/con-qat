@@ -425,33 +425,32 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     out_q = model(input)
                     # Eval slack
                     slacks[bitwidth][-1] += (criterion_soft(out_q, target_soft) - epsilon[bitwidth][-1])*input.size(0)
-                    if args.layerwise_constraint:
-                        model.apply(lambda m: setattr(m, 'wbit', bitwidth))
-                        model.apply(lambda m: setattr(m, 'abit', bitwidth))
-                        act_q = model.get_activations(input)
-                        if args.normalise_constraint or args.pearson:
-                            model.train()
-                            act_q_norm = model.norm_act(act_q)
-                            model.eval()
-                        if args.normalise_constraint or args.pearson:
-                            model.apply(lambda m: setattr(m, 'wbit', 32))
-                            model.apply(lambda m: setattr(m, 'abit', 32))
-                            model.train()
-                            act_full = model.norm_act(act_full)
-                            model.eval()
-                            act_q = act_q_norm
-                        # This will be vectorised
-                        for l, (full, q) in enumerate(zip(act_full, act_q)):
-                            if not l in b_norm_layers:
-                                if args.pearson:
-                                    const_vec = (1-full*q)
-                                else:
-                                    const_vec = constraint_norm(full-q)
-                                if const_vec.dim()>1:
-                                    const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
-                                else:
-                                    const = const_vec
-                                slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
+                    model.apply(lambda m: setattr(m, 'wbit', bitwidth))
+                    model.apply(lambda m: setattr(m, 'abit', bitwidth))
+                    act_q = model.get_activations(input)
+                    if args.normalise_constraint or args.pearson:
+                        model.train()
+                        act_q_norm = model.norm_act(act_q)
+                        model.eval()
+                    if args.normalise_constraint or args.pearson:
+                        model.apply(lambda m: setattr(m, 'wbit', 32))
+                        model.apply(lambda m: setattr(m, 'abit', 32))
+                        model.train()
+                        act_full = model.norm_act(act_full)
+                        model.eval()
+                        act_q = act_q_norm
+                    # This will be vectorised
+                    for l, (full, q) in enumerate(zip(act_full, act_q)):
+                        if not l in b_norm_layers:
+                            if args.pearson:
+                                const_vec = (1-full*q)
+                            else:
+                                const_vec = constraint_norm(full-q)
+                            if const_vec.dim()>1:
+                                const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                            else:
+                                const = const_vec
+                            slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
                 for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                     slacks[bitwidth] = slacks[bitwidth]/len(data_loader.dataset)
                     lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth])
