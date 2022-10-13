@@ -12,6 +12,7 @@ import torch.optim
 import torch.utils.data
 from torch.autograd import Variable
 from tensorboardX import SummaryWriter
+from pathlib import Path
 import random
 import numpy as np
 
@@ -264,6 +265,7 @@ def main():
                         wandb.log({f'slack_layer_{l}_bw_{bw}_test':sl[l], "epoch":epoch})
                     wandb.log({f"dual_CE_bw_{bw}": lambdas[bw][-1].item(), "epoch":epoch })
                     print(f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
+
         ####################
         # STDOUT printing
         ####################
@@ -271,6 +273,12 @@ def main():
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
+        
+    weights_path = os.path.join(args.results_dir, 'trained_model')
+    Path(weights_path).mkdir(parents=True, exist_ok=True)
+    weights_path = os.path.join(weights_path, str(wandb.run.id)+'.pt')
+    torch.save(model.state_dict(), weights_path)
+    wandb.save(weights_path, policy = 'now')
 
 def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, training=True, 
              optimizer=None, sum_writer=None, train_bn=True, epsilon=None, 
