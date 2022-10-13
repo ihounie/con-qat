@@ -180,7 +180,7 @@ def main():
         else:
             epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
     else:
-        epsilon = {b: [8*args.epsilon_out/b] for b in bit_width_list}
+        epsilon = {b: [args.epsilon_out] for b in bit_width_list}
     if args.wandb_log:
         wandb.config.update({"epsilon":epsilon})
 
@@ -282,7 +282,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
     losses = [AverageMeter() for _ in bit_width_list]
     top1 = [AverageMeter() for _ in bit_width_list]
     top5 = [AverageMeter() for _ in bit_width_list]
-    slack_meter = [[AverageMeter() for _ in range(model.get_num_layers())] for b in bit_width_list]
+    slack_meter = [[AverageMeter() for _ in range(len(epsilon[b]))] for b in bit_width_list]
     b_norm_layers = model.get_bn_layers()
     for i, (input, target) in enumerate(data_loader):
         if training:
@@ -412,9 +412,10 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_t5.update(prec5.item(), input.size(0))
                     act_q = model.get_activations(input)
                     slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
-                    for l in range(model.get_num_layers()):
-                        slack =  torch.mean(torch.square(act_q[l]-act_full[l]))- epsilon[bw][l]
-                        slm[l].update(slack.item(), input.size(0))
+                    if args.layerwise_constraint:
+                        for l in range(model.get_num_layers()):
+                            slack =  torch.mean(torch.square(act_q[l]-act_full[l])) - epsilon[bw][l]
+                            slm[l].update(slack.item(), input.size(0))
     if training:
         # Dual Update
         model.eval()
