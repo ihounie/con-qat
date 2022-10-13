@@ -20,7 +20,8 @@ class Activate(nn.Module):
     def forward(self, x):
         x = self.acti(x)
         if self.abit != 32:
-            x = x/torch.amax(x, [0,]+[i for i in range(2, x.dim())], keepdim=True)
+            x_max = torch.amax(x, [0,]+[i for i in range(2, x.dim())], keepdim=True)
+            x =  x/(x_max+(x_max==0))
         if self.quantize:
             x = self.quan(x)
         return x
