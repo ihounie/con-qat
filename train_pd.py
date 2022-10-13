@@ -258,6 +258,7 @@ def main():
                     wandb.log({"dual_vars": hist, "epoch":epoch })
                     for l in range(len(lambdas[bw])-1):
                         wandb.log({f"dual_layer_{l}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
+                    for l in range(len(epsilon[bw])-1):
                         wandb.log({f'slack_layer_{l}_bw_{bw}_train':tsl[l], "epoch":epoch})
                         wandb.log({f'slack_layer_{l}_bw_{bw}_test':vsl[l], "epoch":epoch})
                     wandb.log({f'slack_CE_bw_{bw}_train': tsl[-1], "epoch":epoch})
