@@ -65,7 +65,12 @@ def main(args):
 
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
-    model = models.__dict__[args.model](bit_width_list, train_data.num_classes).cuda()
+    # Add 32 BN layers for evaluation only
+    if 32 not in bit_width_list:
+        bw_list = bit_width_list + [32]
+    else:
+        bw_list = bit_width_list
+    model = models.__dict__[args.model](bw_list, train_data.num_classes).cuda()
     model.bn_to_cuda()
 
     lr_decay = list(map(int, args.lr_decay.split(',')))
@@ -164,7 +169,6 @@ def main(args):
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-
 def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, sum_writer=None):
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
@@ -179,9 +183,8 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
                 if args.eval_constraint:
-                    bw = bit_width_list[-1]
-                    model.apply(lambda m: setattr(m, 'wbit', bw))
-                    model.apply(lambda m: setattr(m, 'abit', bw))
+                    model.apply(lambda m: setattr(m, 'wbit', 32))
+                    model.apply(lambda m: setattr(m, 'abit', 32))
                     act_full = model.get_activations(input)
                     output = act_full[-1]
                     target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
@@ -202,8 +205,8 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                             l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l])).item(), input.size(0))
                 else:
                      with torch.no_grad():
-                        model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
-                        model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
+                        model.apply(lambda m: setattr(m, 'wbit', 32))
+                        model.apply(lambda m: setattr(m, 'abit', 32))
                         for bw, am_l, am_t1, am_t5 in zip(bit_width_list, losses, top1, top5):
                             model.apply(lambda m: setattr(m, 'wbit', bw))
                             model.apply(lambda m: setattr(m, 'abit', bw))
@@ -213,14 +216,13 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                             am_l.update(loss.item(), input.size(0))
                             am_t1.update(prec1.item(), input.size(0))
                             am_t5.update(prec5.item(), input.size(0))
-
         else:
             input = input.cuda()
             target = target.cuda(non_blocking=True)
             optimizer.zero_grad()
             # train full-precision supervisor
-            model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
-            model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
+            model.apply(lambda m: setattr(m, 'wbit', 32))
+            model.apply(lambda m: setattr(m, 'abit', 32))
             act_full = model.get_activations(input)
             output = act_full[-1]
             loss = criterion(output, target)
