@@ -390,7 +390,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
         model.eval()
         print("Peforming Dual Update...")
         with torch.no_grad():
-            slacks = {bitwidth: torch.zeros_like(lambdas[bitwidth]) for bitwidth in bit_width_list[:-1]}
+            slacks = {bitwidth: torch.zeros(len(epsilon[bitwidth])).cuda() for bitwidth in bit_width_list[:-1]}
             for i, (input, target) in enumerate(data_loader):
                 input, target = input.cuda(), target.cuda(non_blocking=True)
                 # High precision
@@ -424,20 +424,23 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         act_q= model.norm_act(act_q)
                         model.eval()
                     # This will be vectorised
-                    for l, (full, q) in enumerate(zip(act_full, act_q)):
-                        if not l in b_norm_layers:
-                            if args.pearson:
-                                const_vec = (1-full*q)
-                            else:
-                                const_vec = constraint_norm(full-q)
-                            if const_vec.dim()>1:
-                                const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
-                            else:
-                                const = const_vec
-                            slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
+                        for l, (full, q) in enumerate(zip(act_full, act_q)):
+                            if not l in b_norm_layers:
+                                if args.pearson:
+                                    const_vec = (1-full*q)
+                                else:
+                                    const_vec = constraint_norm(full-q)
+                                if const_vec.dim()>1:
+                                    const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                                else:
+                                    const = const_vec
+                                slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
             for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                 slacks[bitwidth] = slacks[bitwidth]/len(data_loader.dataset)
-                lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth])
+                if args.layerwise_constraint:
+                    lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth])
+                else:
+                    lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth][-1])
                 for l in range(len(slacks[bitwidth])):
                     slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), input.size(0))
         if initial_model_state:
