@@ -18,12 +18,7 @@ class Activate(nn.Module):
             self.quan = activation_quantize_fn(self.bit_list)
 
     def forward(self, x):
-        if self.abit != 32:
-            x = torch.clip(x, min=0.0, max=1.0)
-            #x_max = torch.amax(x, [0,]+[i for i in range(2, x.dim())], keepdim=True)
-            #x =  x/(x_max+(x_max==0))
-        else:
-            x = self.acti(x)
+        x = torch.clip(x, min=0.0, max=1.0)
         if self.quantize:
             x = self.quan(x)
         return x
@@ -111,26 +106,16 @@ class PreActResNet(nn.Module):
     
     def get_activations(self, x):
         out = self.conv0(x)
-        if self.abit==32:
-            act = [torch.clip(out, 1.0)]
-        else:
-            act = [out]
+        act = [out]
         for layer in self.layers:
             out = layer(out)
-            if self.abit==32:
-                act.append(torch.clip(out, 1.0))
-            else:
-                act.append(out)
+            act.append(out)
         out = self.bn(out)
-        if self.abit==32:
-            act.append(torch.clip(out, 1.0))
-        else:
-            act.append(out)
+        act.append(out)
         out = out.mean(dim=2).mean(dim=2)
-        if self.abit==32:
-            act.append(torch.clip(out, 1.0))
-        else:
-            act.append(out)
+        act.append(out)
+        out = self.fc(out)
+        act.append(out)
         return act
     
     def eval_layers(self,input, activations):
