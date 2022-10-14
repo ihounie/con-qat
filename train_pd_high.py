@@ -381,7 +381,9 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     am_l.update(loss.item(), input.size(0))
                     am_t1.update(prec1.item(), input.size(0))
                     am_t5.update(prec5.item(), input.size(0))
-                    act_q = model.get_activations(input)
+                    # compute activations with Low precision model from high prec acts
+                    act_q = model.eval_layers(input, act_full)
+                    # Eval slack
                     slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
                     for l in range(model.get_num_layers()):
                         slack =  torch.mean(torch.square(act_q[l]-act_full[l])) - epsilon[bw][l]
