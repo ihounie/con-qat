@@ -424,17 +424,17 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         act_q= model.norm_act(act_q)
                         model.eval()
                     # This will be vectorised
-                        for l, (full, q) in enumerate(zip(act_full, act_q)):
-                            if not l in b_norm_layers:
-                                if args.pearson:
-                                    const_vec = (1-full*q)
-                                else:
-                                    const_vec = constraint_norm(full-q)
-                                if const_vec.dim()>1:
-                                    const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
-                                else:
-                                    const = const_vec
-                                slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
+                    for l, (full, q) in enumerate(zip(act_full, act_q)):
+                        if not l in b_norm_layers:
+                            if args.pearson:
+                                const_vec = (1-full*q)
+                            else:
+                                const_vec = constraint_norm(full-q)
+                            if const_vec.dim()>1:
+                                const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                            else:
+                                const = const_vec
+                            slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
             for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                 slacks[bitwidth] = slacks[bitwidth]/len(data_loader.dataset)
                 if args.layerwise_constraint:
