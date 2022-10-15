@@ -442,7 +442,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 else:
                     lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth][-1])
                 for l in range(len(slacks[bitwidth])):
-                    slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), input.size(0))
+                    slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), len(data_loader.dataset))
         if initial_model_state:
             model.train()
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], [[l.avg for l in _] for _ in slack_meter], lambdas
