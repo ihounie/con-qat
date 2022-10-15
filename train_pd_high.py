@@ -428,25 +428,29 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                         act_q= model.norm_act(act_q)
                         model.eval()
                     # This will be vectorised
-                        for l, (full, q) in enumerate(zip(act_full, act_q)):
-                            if not l in b_norm_layers:
-                                if args.pearson:
-                                    const_vec = (1-full*q)
-                                else:
-                                    const_vec = constraint_norm(full-q)
-                                if const_vec.dim()>1:
-                                    const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
-                                else:
-                                    const = const_vec
-                                slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
+                    for l, (full, q) in enumerate(zip(act_full, act_q)):
+                        if not l in b_norm_layers:
+                            if args.pearson:
+                                const_vec = (1-full*q)
+                            else:
+                                const_vec = constraint_norm(full-q)
+                            if const_vec.dim()>1:
+                                const = torch.mean(const_vec, axis=[l for l in range(1, const_vec.dim())])
+                            else:
+                                const = const_vec
+                            slacks[bitwidth][l] += torch.sum(const-epsilon[bitwidth][l])
             for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                 slacks[bitwidth] = slacks[bitwidth]/len(data_loader.dataset)
                 if args.layerwise_constraint:
+                    print("Lambdas", lambdas[bitwidth])
+                    print("Slacks", slacks[bitwidth])
                     lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth])
                 else:
+                    print("Lambda", lambdas[bitwidth])
+                    print("Slack", slacks[bitwidth][-1])
                     lambdas[bitwidth] = torch.nn.functional.relu(lambdas[bitwidth] + args.lr_dual*slacks[bitwidth][-1])
                 for l in range(len(slacks[bitwidth])):
-                    slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), input.size(0))
+                    slack_meter[bw_idx][l].update(slacks[bitwidth][l].item(), len(data_loader.dataset))
         if initial_model_state:
             model.train()
         return [_.avg for _ in losses], [_.avg for _ in top1], [_.avg for _ in top5], [[l.avg for l in _] for _ in slack_meter], lambdas
