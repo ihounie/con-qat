@@ -74,7 +74,10 @@ def main(args):
     model.bn_to_cuda()
     # SELECTIVE QUANTIZATION
     if args.no_quant_layers is not None:
-        no_quant_list = list(map(int, args.bit_width_list.split(',')))
+        no_quant_list = list(map(int, args.no_quant_layers.split(',')))
+        print("*"*20)
+        print("Unquantised Layers", no_quant_list)
+        print("*"*20)
     else:
         no_quant_list = []
     if args.wandb_log:
@@ -118,7 +121,7 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
         train_loss, train_prec1, train_prec5 = forward(train_loader, model, criterion, criterion_soft, epoch, args, True,
-                                                       optimizer, sum_writer)
+                                                       optimizer, sum_writer, no_quant_layer_list=no_quant_list)
         model.eval()
         train_loss, train_prec1, train_prec5, train_l2_hl, train_ce = forward(train_loader, model, criterion, criterion_soft, epoch, args, False, no_quant_layer_list=no_quant_list)
         val_loss, val_prec1, val_prec5, val_l2_hl, val_ce = forward(val_loader, model, criterion, criterion_soft, epoch, args, False, no_quant_layer_list=no_quant_list)
@@ -186,45 +189,46 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
     CE_meter = [AverageMeter() for b in bit_width_list]
     for i, (input, target) in enumerate(data_loader):
         if not training:
+            model.eval()
             with torch.no_grad():
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
                 if args.eval_constraint:
                     model.apply(lambda m: setattr(m, 'wbit', 32))
                     model.apply(lambda m: setattr(m, 'abit', 32))
-                    act_full = model.get_activations(input)
-                    output = act_full[-1]
-                    target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                    target_soft = torch.nn.functional.softmax(model(input).detach(), dim=1)
                     for bw, am_l, am_t1, am_t5,  l2hlm, cem in zip(bit_width_list, losses, top1,
                                                                     top5,l2_hl_meter, CE_meter):
                         model.apply(lambda m: setattr(m, 'wbit', bw))
                         model.apply(lambda m: setattr(m, 'abit', bw))
                         for l in no_quant_layer_list:
                             layer = model.get_layer(l)
-                            layer.abit = 32
-                            layer.wbit = 32
+                            layer.apply(lambda m: setattr(m, 'wbit', 32))
+                            layer.apply(lambda m: setattr(m, 'abit', 32))
                         act_q = model.get_activations(input)
                         output = act_q[-1]
                         loss = criterion(output, target)
+                        model.apply(lambda m: setattr(m, 'wbit', 32))
+                        model.apply(lambda m: setattr(m, 'abit', 32))
+                        act_full = model.eval_layers(input, act_q)
                         prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
                         am_l.update(loss.item(), input.size(0))
                         am_t1.update(prec1.item(), input.size(0))
                         am_t5.update(prec5.item(), input.size(0))
-                        act_q = model.get_activations(input)
                         cem.update(criterion_soft(output, target_soft).item(), input.size(0))
                         for l in range(model.get_num_layers()):
                             l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l])).item(), input.size(0))
+                            #if l in no_quant_layer_list:
+                               #assert(torch.allclose(act_q[l], act_full[l]))
                 else:
                      with torch.no_grad():
-                        model.apply(lambda m: setattr(m, 'wbit', 32))
-                        model.apply(lambda m: setattr(m, 'abit', 32))
                         for bw, am_l, am_t1, am_t5 in zip(bit_width_list, losses, top1, top5):
                             model.apply(lambda m: setattr(m, 'wbit', bw))
                             model.apply(lambda m: setattr(m, 'abit', bw))
                             for l in no_quant_layer_list:
                                 layer = model.get_layer(l)
-                                layer.abit = 32
-                                layer.wbit = 32
+                                layer.apply(lambda m: setattr(m, 'wbit', 32))
+                                layer.apply(lambda m: setattr(m, 'abit', 32))
                             output = model(input)
                             loss = criterion(output, target)
                             prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
@@ -235,33 +239,26 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
             input = input.cuda()
             target = target.cuda(non_blocking=True)
             optimizer.zero_grad()
-            # train full-precision supervisor
-            model.apply(lambda m: setattr(m, 'wbit', 32))
-            model.apply(lambda m: setattr(m, 'abit', 32))
-            act_full = model.get_activations(input)
-            output = act_full[-1]
-            loss = criterion(output, target)
-            loss.backward()
-            prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-            losses[-1].update(loss.item(), input.size(0))
-            top1[-1].update(prec1.item(), input.size(0))
-            top5[-1].update(prec5.item(), input.size(0))
             # train less-bit-wdith models
-            target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
             for bw, am_l, am_t1, am_t5, l2hlm, cem in zip(bit_width_list, losses, top1, top5,l2_hl_meter, CE_meter):
                 model.apply(lambda m: setattr(m, 'wbit', bw))
                 model.apply(lambda m: setattr(m, 'abit', bw))
                 for l in no_quant_layer_list:
                     layer = model.get_layer(l)
-                    layer.abit = 32
-                    layer.wbit = 32
+                    layer.apply(lambda m: setattr(m, 'wbit', 32))
+                    layer.apply(lambda m: setattr(m, 'abit', 32))
+                model(input)
+                model.eval()
                 act_q = model.get_activations(input)
+                model.train()
                 output = act_q[-1]
-                loss = criterion_soft(output, target_soft)
+                loss = criterion(output, target)
                 loss.backward()
-                # recursive supervision
-                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
-
+                model.apply(lambda m: setattr(m, 'wbit', 32))
+                model.apply(lambda m: setattr(m, 'abit', 32))
+                model.eval()
+                act_full = model.eval_layers(input, act_q)
+                model.train()
                 prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
                 am_l.update(loss.item(), input.size(0))
                 am_t1.update(prec1.item(), input.size(0))
@@ -269,8 +266,9 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                 cem.update(loss.item(), input.size(0))
                 for l in range(model.get_num_layers()):
                     l2hlm[l].update(torch.mean(torch.square(act_q[l]-act_full[l])).item(), input.size(0))
+                    #if l in no_quant_layer_list:
+                        #assert(torch.allclose(act_q[l], act_full[l]))
             optimizer.step()
-
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}, bit_width_max loss {3:.2f}, prec1 {4:.2f}, prec5 {5:.2f}'.format(
                     epoch, i, len(data_loader), losses[-1].val, top1[-1].val, top5[-1].val))
