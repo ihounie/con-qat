@@ -67,6 +67,7 @@ def batchnorm1d_fn(bit_list, affine=True):
 class qfn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, k):
+        input = torch.clip(input, min=0.0, max=1.0)
         n = float(2**k - 1)
         out = torch.round(input * n) / n
         return out

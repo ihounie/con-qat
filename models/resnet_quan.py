@@ -51,7 +51,6 @@ class PreActBasicBlockQ(nn.Module):
     def forward(self, x):
         out = self.bn0(x)
         out = self.act0(out)
-
         if self.skip_conv is not None:
             shortcut = self.skip_conv(out)
             shortcut = self.skip_bn(shortcut)
@@ -63,6 +62,7 @@ class PreActBasicBlockQ(nn.Module):
         out = self.act1(out)
         out = self.conv1(out)
         out += shortcut
+        out = torch.clip(out, 0.0, 1.0)
         return out
 
 
@@ -111,9 +111,7 @@ class PreActResNet(nn.Module):
             out = layer(out)
             act.append(out)
         out = self.bn(out)
-        act.append(out)
         out = out.mean(dim=2).mean(dim=2)
-        act.append(out)
         out = self.fc(out)
         act.append(out)
         return act
@@ -123,10 +121,6 @@ class PreActResNet(nn.Module):
         out = [self.conv0(input)]
         for idx, layer in enumerate(self.layers):
             out.append(layer(activations[idx]))
-        idx+=1
-        out.append(self.bn(activations[idx]))
-        idx+=1
-        out.append(activations[idx].mean(dim=2).mean(dim=2))
         return out
 
     def norm_act(self,activations):
@@ -143,7 +137,6 @@ class PreActResNet(nn.Module):
         num_layers = 1 # conv0
         for layer in self.layers:#conv layers
             num_layers +=1
-        num_layers += 2 # bn, pooling
         return num_layers
 
     def get_bn_layers(self):
