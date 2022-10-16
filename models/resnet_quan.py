@@ -128,6 +128,12 @@ class PreActResNet(nn.Module):
         idx+=1
         out.append(activations[idx].mean(dim=2).mean(dim=2))
         return out
+    
+    def get_layer(self, l):
+        if l==0:
+            return self.conv0
+        else: # This will throu an out of index if l= last two layers
+            return self.layers[l-1]
 
     def norm_act(self,activations):
         norm_act = []
