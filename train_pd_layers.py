@@ -21,9 +21,7 @@ from models.losses import CrossEntropyLossSoft
 from datasets.data import get_dataset, get_transform
 from optimizer import get_optimizer_config, get_lr_scheduler
 from utils import setup_logging, setup_gpus, save_checkpoint
-from utils import AverageMeter, accuracy
-
-
+from utils import AverageMeter, accuracy, get_param_by_name, get_bit_width_list, log_epoch_end, seed_everything
 import wandb
 import copy
 
@@ -55,58 +53,6 @@ parser.add_argument('--epsilonlw', default=1/(2**8-1), type = float, help='layer
 parser.add_argument('--seed', default=42, type=int)
 
 args = parser.parse_args()
-
-def seed_everything(seed: int):    
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-def get_param_by_name(module,access_string):
-    """Retrieve a module nested in another by its access string.
-
-    Works even when there is a Sequential in the module.
-    """
-    names = access_string.split(sep='.')
-    return reduce(getattr, names, module)
-
-def get_bit_width_list(args):
-    bit_width_list = list(map(int, args.bit_width_list.split(',')))
-    bit_width_list.sort()
-    # Add Full precision if not Passed
-    if 32 not in bit_width_list:
-        bit_width_list += [32]
-    return bit_width_list
-
-def log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train,
-                 val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, lambdas, epsilon, layer_names, prefix=''):
-    for bw, tl, tp1, tsl, vl, vp1, vsl, tel, tep1  in zip(bit_width_list, train_loss, train_prec1, slack_train,
-                                                                val_loss, val_prec1, slack_val,
-                                                                test_loss, test_prec1):
-        wandb.log({prefix+f'train_loss_{bw}':tl, "epoch":epoch})
-        wandb.log({prefix+f'train_acc_{bw}':tp1, "epoch":epoch})
-        wandb.log({prefix+f'val_loss_{bw}':vl, "epoch":epoch})
-        wandb.log({prefix+f'val_acc_{bw}':vp1, "epoch":epoch})
-        wandb.log({prefix+f'test_loss_{bw}':tel, "epoch":epoch})
-        wandb.log({prefix+f'test_acc_{bw}':tep1, "epoch":epoch})
-        # If low precision, log associated Dual Variables
-        if bw != bit_width_list[-1]:
-            hist = wandb.Histogram(np_histogram=(lambdas[bw].cpu().numpy(), [float(l) for l in range(len(lambdas[bw])+1)]) )
-            wandb.log({prefix+"dual_vars": hist, "epoch":epoch })
-            if args.layerwise_constraint:
-                for l in range(len(lambdas[bw])):
-                    wandb.log({prefix+f"dual_{layer_names[l]}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
-            else:
-                wandb.log({prefix+f"dual_CE_bw_{bw}": lambdas[bw].item(), "epoch":epoch })
-            for l in range(len(epsilon[bw])):
-                wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_train':tsl[l], "epoch":epoch})
-                wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_val':vsl[l], "epoch":epoch})
-            if prefix=='':
-                print(prefix+f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
 
 def main():
     

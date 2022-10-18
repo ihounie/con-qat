@@ -20,7 +20,6 @@ do
         --bit_width_list "${BW}" \
         --wandb_log \
         --seed "${seed}" \
-        --project DEBUG \
-        --eval_constraint
+        --project QS_Baselines
 }
 done

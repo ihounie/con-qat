@@ -1,5 +1,7 @@
 import argparse
+import copy
 import os
+from pathlib import Path
 import time
 import socket
 import logging
@@ -19,45 +21,9 @@ from models.losses import CrossEntropyLossSoft
 from datasets.data import get_dataset, get_transform
 from optimizer import get_optimizer_config, get_lr_scheduler
 from utils import setup_logging, setup_gpus, save_checkpoint
-from utils import AverageMeter, accuracy
+from utils import AverageMeter, accuracy, get_param_by_name, get_bit_width_list, log_epoch_end, seed_everything
 
 import wandb
-
-def seed_everything(seed: int):    
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-def log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train,
-                 val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, lambdas, epsilon, layer_names, prefix=''):
-    for bw, tl, tp1, tsl, vl, vp1, vsl, tel, tep1  in zip(bit_width_list, train_loss, train_prec1, slack_train,
-                                                                val_loss, val_prec1, slack_val,
-                                                                test_loss, test_prec1):
-        wandb.log({prefix+f'train_loss_{bw}':tl, "epoch":epoch})
-        wandb.log({prefix+f'train_acc_{bw}':tp1, "epoch":epoch})
-        wandb.log({prefix+f'val_loss_{bw}':vl, "epoch":epoch})
-        wandb.log({prefix+f'val_acc_{bw}':vp1, "epoch":epoch})
-        wandb.log({prefix+f'test_loss_{bw}':tel, "epoch":epoch})
-        wandb.log({prefix+f'test_acc_{bw}':tep1, "epoch":epoch})
-        # If low precision, log associated Dual Variables
-        if bw != bit_width_list[-1]:
-            hist = wandb.Histogram(np_histogram=(lambdas[bw].cpu().numpy(), [float(l) for l in range(len(lambdas[bw])+1)]) )
-            wandb.log({prefix+"dual_vars": hist, "epoch":epoch })
-            if args.layerwise_constraint:
-                for l in range(len(lambdas[bw])):
-                    wandb.log({prefix+f"dual_{layer_names[l]}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
-            else:
-                wandb.log({prefix+f"dual_CE_bw_{bw}": lambdas[bw].item(), "epoch":epoch })
-            for l in range(len(epsilon[bw])):
-                wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_train':tsl[l], "epoch":epoch})
-                wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_val':vsl[l], "epoch":epoch})
-            if prefix='':
-                print(prefix+f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
 
 
 def main(args):
@@ -125,7 +91,7 @@ def main(args):
     for l in range(num_layers):
         layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
     layer_names.append("CE")
-    model = models.__dict__[args.model](bw_list, train_data.num_classes).cuda()
+    model = models.__dict__[args.model](bw_list, test_data.num_classes).cuda()
     model.bn_to_cuda()
 
     lr_decay = list(map(int, args.lr_decay.split(',')))
@@ -136,9 +102,13 @@ def main(args):
         lr_scheduler = get_lr_scheduler(args.optimizer, optimizer, lr_decay)
     num_parameters = sum([l.nelement() for l in model.parameters()])
     logging.info("number of parameters: %d", num_parameters)
-
+    # LOSS
     criterion = nn.CrossEntropyLoss().cuda()
     criterion_soft = CrossEntropyLossSoft().cuda()
+    #########################
+    # For Comparison Purposes ONLY
+    ########################
+    epsilon = {b: [ 0 for _ in range(model.get_num_layers()+1)] for b in bit_width_list}
 
     for epoch in range(args.start_epoch, args.epochs):
         #######################
@@ -146,14 +116,14 @@ def main(args):
         #######################
         model.train()
         train_loss, train_prec1, train_prec5, slack_train = forward(train_loader, model, criterion, criterion_soft, epoch, args, True,
-                                                       optimizer)
+                                                       optimizer=optimizer, bit_width_list=bit_width_list)
         #######################
         #   VAL & TESTING
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5, slack_val = forward(val_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon)
-        test_loss, test_prec1, test_prec5, _ = forward(test_loader, model, lambdas, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon, eval_slacks=False)
+        val_loss, val_prec1, val_prec5, slack_val = forward(val_loader, model, criterion, criterion_soft, epoch, args, False, bit_width_list=bit_width_list,epsilon=epsilon)
+        test_loss, test_prec1, test_prec5, _ = forward(test_loader, model, criterion, criterion_soft, epoch, args, False,  bit_width_list=bit_width_list,epsilon=epsilon, eval_slacks=False)
 
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
@@ -165,6 +135,9 @@ def main(args):
         if best_prec1 is None:
             is_best = True
             best_prec1 = val_prec1[-1]
+            weights_folder = os.path.join(args.results_dir, 'trained_model')
+            weights_path = os.path.join(weights_folder, str(wandb.run.id)+'.pt')
+            Path(weights_folder).mkdir(parents=True, exist_ok=True)
         else:
             is_best = val_prec1[-1] > best_prec1
             best_prec1 = max(val_prec1[-1], best_prec1)
@@ -177,18 +150,16 @@ def main(args):
         #   LOGGING
         ###############################
         if args.wandb_log:
-            log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train, val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, lambdas, epsilon, layer_names)
+            log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train, val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, None, epsilon, layer_names)
             if is_best:
-                log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train, val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, lambdas, epsilon,layer_names, prefix='best')
+                log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train, val_loss, val_prec1, slack_val,test_loss, test_prec1, epoch, None, epsilon,layer_names, prefix='best')
 
         logging.info('Epoch {}: \ntrain loss {:.2f}, train prec1 {:.2f}, train prec5 {:.2f}\n'
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, eval_slacks=True):
-    bit_width_list = list(map(int, args.bit_width_list.split(',')))
-    bit_width_list.sort()
+def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, eval_slacks=True, bit_width_list=[8, 32], epsilon=None):
     # Save state to return model in its initial state
     initial_model_state = model.training
     losses = [AverageMeter() for _ in bit_width_list]
@@ -292,7 +263,9 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain', default=None, help='path to pretrained full-precision checkpoint')
     parser.add_argument('--resume', default=None, help='path to latest checkpoint')
     parser.add_argument('--bit_width_list', default='4', help='bit width list')
+    parser.add_argument('--constraint_norm', default='L2', help='L2, L1 for evaluation only')
     parser.add_argument('--wandb_log',  action='store_true')
+    parser.add_argument('--val_frac', default=0.1, type=float, help='Validation Fraction')
     parser.add_argument('--project',  default='Baselines', type=str, help='wandb Project name')
     parser.add_argument('--seed', default=42, type=int)
     args = parser.parse_args()
