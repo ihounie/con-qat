@@ -33,13 +33,13 @@ parser.add_argument('--dataset', default='imagenet', help='dataset name or folde
 parser.add_argument('--train_split', default='train', help='train split name')
 parser.add_argument('--model', default='resnet18', help='model architecture')
 parser.add_argument('--workers', default=0, type=int, help='number of data loading workers')
-parser.add_argument('--epochs', default=200, type=int, help='number of epochs')
+parser.add_argument('--epochs', default=100, type=int, help='number of epochs')
 parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')
 parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
 parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
 parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate')
 parser.add_argument('--lr_dual', default=0.01, type=float, help='dual learning rate')
-parser.add_argument('--lr_decay', default='100,150,180', help='lr decay steps')
+parser.add_argument('--lr_decay', default='50, 75, 90', help='lr decay steps')
 parser.add_argument('--val_frac', default=0.1, type=float, help='Validation Fraction')
 parser.add_argument('--epsilon_out', default=0.1, type=float, help='output crossentropy constraint level')
 parser.add_argument('--weight-decay', default=3e-4, type=float, help='weight decay')
@@ -105,7 +105,7 @@ def log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train,
             for l in range(len(epsilon[bw])):
                 wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_train':tsl[l], "epoch":epoch})
                 wandb.log({prefix+f'slack_{layer_names[l]}_bw_{bw}_val':vsl[l], "epoch":epoch})
-            if prefix='':
+            if prefix=='':
                 print(prefix+f"Dual CE bw {bw}: {lambdas[bw][-1].item()}")
 
 def main():
