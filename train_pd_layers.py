@@ -245,7 +245,7 @@ def main():
             weights_folder = os.path.join(args.results_dir, 'trained_model')
             Path(weights_folder).mkdir(parents=True, exist_ok=True)
         else:
-            is_best = val_lagrangian < best_prec1
+            is_best = val_lagrangian < best_lag
         if is_best:
             weights_folder = os.path.join(args.results_dir, 'trained_model')
             weights_path = os.path.join(weights_folder, str(wandb.run.id)+'.pt')
