@@ -1,5 +1,5 @@
 #!/bin/bash
-BW=4
+BW=$1
 for seed in 0 1 2
 do
 {
@@ -7,7 +7,7 @@ do
     train_id="vanilla_${BW}"
     result_dir="./results/$train_id"
     mkdir -p $result_dir
-    python -u train.py \
+    python -u train_vanilla.py \
         --model resnet20q \
         --dataset cifar10 \
         --train_split train \
@@ -20,7 +20,7 @@ do
         --bit_width_list "${BW}" \
         --wandb_log \
         --seed "${seed}" \
-        --project Blines \
+        --project DEBUG \
         --eval_constraint
 }
 done
