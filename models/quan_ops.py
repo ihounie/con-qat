@@ -110,6 +110,7 @@ class activation_quantize_fn(nn.Module):
         if self.abit == 32:
             activation_q = x
         else:
+            x = torch.clamp(x, 0.0, 1.0)
             activation_q = qfn.apply(x, self.abit)
         return activation_q
 
@@ -127,10 +128,13 @@ def conv2d_quantize_fn(bit_list):
                                             bias)
             self.bit_list = bit_list
             self.w_bit = self.bit_list[-1]
+            self.a_bit = self.bit_list[-1]
             self.quantize_fn = weight_quantize_fn(self.bit_list)
+            self.a_quantize_fn = activation_quantize_fn(self.bit_list)
 
         def forward(self, input, order=None):
             weight_q = self.quantize_fn(self.weight)
+            input = self.a_quantize_fn(input)
             return F.conv2d(input, weight_q, self.bias, self.stride, self.padding, self.dilation, self.groups)
 
     return Conv2d_Q_

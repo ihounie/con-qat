@@ -8,7 +8,7 @@ __all__ = ['resnet20q', 'resnet50q']
 
 
 class Activate(nn.Module):
-    def __init__(self, bit_list, quantize=True):
+    def __init__(self, bit_list, quantize=False):
         super(Activate, self).__init__()
         self.bit_list = bit_list
         self.abit = self.bit_list[-1]
