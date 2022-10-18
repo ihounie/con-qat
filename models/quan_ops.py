@@ -130,12 +130,16 @@ def conv2d_quantize_fn(bit_list):
             self.w_bit = self.bit_list[-1]
             self.a_bit = self.bit_list[-1]
             self.quantize_fn = weight_quantize_fn(self.bit_list)
-            self.a_quantize_fn = activation_quantize_fn(self.bit_list)
+            self.quan_a = activation_quantize_fn(self.bit_list)
 
-        def forward(self, input, order=None):
+        def forward(self, input, order=None, pre=False):
             weight_q = self.quantize_fn(self.weight)
-            input = self.a_quantize_fn(input)
-            return F.conv2d(input, weight_q, self.bias, self.stride, self.padding, self.dilation, self.groups)
+            input = self.quan_a(input)
+            out = F.conv2d(input, weight_q, self.bias, self.stride, self.padding, self.dilation, self.groups)
+            if pre:
+                return input, out
+            else:
+                return out
 
     return Conv2d_Q_
 

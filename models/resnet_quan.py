@@ -45,8 +45,8 @@ class PreActBasicBlockQ(nn.Module):
 
         self.skip_conv = None
         if stride != 1:
-            self.skip_conv = nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False)
-            self.skip_bn = nn.BatchNorm2d(out_planes)
+            self.skip_conv = Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False)
+            self.skip_bn = NormLayer(out_planes)
 
     def forward(self, x):
         out = self.bn0(x)
@@ -65,6 +65,43 @@ class PreActBasicBlockQ(nn.Module):
         out += shortcut
         return out
 
+    def get_activations(self, input):
+        zq_for_hp = []# inputs for HP
+        zq_for_const = []# For constraint Eval
+        out = self.bn0(input)
+        out = self.act0(out)
+        if self.skip_conv is not None:
+            shortcut = self.skip_conv(out)
+            shortcut = self.skip_bn(shortcut)
+        else:
+            shortcut = input
+        if self.skip_conv is not None:
+            zq_for_const.append(self.skip_conv.quan_a(shortcut))#quantized out of shortcut
+        else:
+            zq_for_const.append(shortcut)
+        pre, out = self.conv0(out, pre=True)
+        zq_for_hp.append(pre)#quantized input of conv1
+        out = self.act1(self.bn1(out))
+        pre, out = self.conv1(out, pre=True)
+        zq_for_const.append(pre)#quantized out of conv1
+        zq_for_hp.append(pre)#quantized input of conv2
+        zq_for_const.append(self.conv1.quan_a(out))#quantized out of conv2
+        out += shortcut
+        return zq_for_hp, zq_for_const, out
+
+    def eval_layers(self, z):
+        act = []
+        if self.skip_conv is not None:
+            shortcut = self.skip_conv(z[0])
+            shortcut = self.skip_bn(shortcut)
+        else:
+            shortcut = z[0]
+        out = self.conv0(z[0])
+        act.append(out)
+        out = self.conv1(z[1])
+        act.append(out)
+        act.append(shortcut)
+        return act
 
 class PreActResNet(nn.Module):
     def __init__(self, block, num_units, bit_list, num_classes, expand=5):
@@ -105,29 +142,26 @@ class PreActResNet(nn.Module):
         return out
     
     def get_activations(self, x):
+        zq_for_hp, zq_for_const = [], []
         out = self.conv0(x)
-        act = [out]
         for layer in self.layers:
-            out = layer(out)
-            act.append(out)
+            hp, const, out = layer.get_activations(out)
+            zq_for_hp += hp
+            zq_for_const += const
         out = self.bn(out)
-        act.append(out)
         out = out.mean(dim=2).mean(dim=2)
-        act.append(out)
         out = self.fc(out)
-        act.append(out)
-        return act
+        return zq_for_hp, zq_for_const, out
     
-    def eval_layers(self,input, activations):
-        # this should be parallelised
-        out = [self.conv0(input)]
-        for idx, layer in enumerate(self.layers):
-            out.append(layer(activations[idx]))
-        idx+=1
-        out.append(self.bn(activations[idx]))
-        idx+=1
-        out.append(activations[idx].mean(dim=2).mean(dim=2))
-        return out
+    def eval_layers(self,input, zq_for_hp):
+        z = []
+        idx=0
+        for layer in self.layers:
+            # Each block has 2 activation inputs (input to block and inpu to second conv)
+            out = layer.eval_layers(zq_for_hp[idx:idx+2])
+            idx += 2
+            z += out
+        return z
     
     def get_layer(self, l):
         if l==0:
@@ -146,17 +180,12 @@ class PreActResNet(nn.Module):
             bn.cuda()
 
     def get_num_layers(self):
-        num_layers = 1 # conv0
+        num_layers = 0 # conv0 doesnt count
         for layer in self.layers:#conv layers
-            num_layers +=1
-        num_layers += 2 # bn, pooling
+            # each Layer has three constrainable outputs
+            num_layers +=3
+        # Output Not counted
         return num_layers
-
-    def get_bn_layers(self):
-        num_layers = 1 # conv0
-        for layer in self.layers:#conv layers
-            num_layers +=1
-        return [num_layers]
         
 class PreActBottleneckQ(nn.Module):
     expansion = 4
