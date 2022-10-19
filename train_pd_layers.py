@@ -36,7 +36,7 @@ parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch num
 parser.add_argument('--batch-size', default=128, type=int, help='mini-batch size')
 parser.add_argument('--optimizer', default='sgd', help='optimizer function used')
 parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate')
-parser.add_argument('--lr_dual', default=0.01, type=float, help='dual learning rate')
+parser.add_argument('--lr_dual', default=0.1, type=float, help='dual learning rate')
 parser.add_argument('--lr_decay', default='50, 75, 90', help='lr decay steps')
 parser.add_argument('--val_frac', default=0.1, type=float, help='Validation Fraction')
 parser.add_argument('--epsilon_out', default=0.1, type=float, help='output crossentropy constraint level')
@@ -136,9 +136,9 @@ def main():
     if args.layerwise_constraint:
         lambdas = {bw:torch.zeros(num_layers+1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
         for bw in bit_width_list[:-1]:
-            lambdas[bw][-1] = 1
+            lambdas[bw][-1] = 0.01
     else:
-        lambdas = {bw:torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
+        lambdas = {bw:0.01*torch.ones(1, requires_grad=False).cuda() for bw in bit_width_list[:-1]}
     
     epsilon = {b: [ args.epsilonlw for _ in range(model.get_num_layers())]+[args.epsilon_out] for b in bit_width_list}
 
@@ -270,7 +270,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 # Init Slacks
                 slacks = torch.zeros_like(lambdas[bitwidth])
                 # Output Constraint
-                slacks[-1] = criterion_soft(out_q, softmax(out_full, dim=1)) - epsilon[bitwidth][-1]
+                slacks[-1] = torch.abs(loss-criterion(out_q, target)) - epsilon[bitwidth][-1]
                 if args.layerwise_constraint:
                     # This will be vectorised
                     for l, (full, q) in enumerate(zip(z_full_for_const, zq_for_const)):
@@ -300,7 +300,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 model.apply(lambda m: setattr(m, 'abit', 32))
                 model.eval()
                 output = model(input)
-                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                loss_high = criterion(output, target)
                 for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
                     model.apply(lambda m: setattr(m, 'wbit', bw))
                     model.apply(lambda m: setattr(m, 'abit', bw))
@@ -318,7 +318,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     model.eval()
                     z_full_for_const = model.eval_layers(input, zq_for_hp)
                     # Log slacks
-                    slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
+                    slm[-1].update(torch.abs(loss_high-criterion(output, target)), input.size(0))
                     for l in range(model.get_num_layers()):
                         slack =  torch.mean(torch.square(zq_for_const[l]-z_full_for_const[l])) - epsilon[bw][l]
                         slm[l].update(slack.item(), input.size(0))
@@ -356,7 +356,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                 losses[-1].update(loss.item(), input.size(0))
                 top1[-1].update(prec1.item(), input.size(0))
                 top5[-1].update(prec5.item(), input.size(0))
-                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                loss_high = loss
                 # Low precision
                 for bw_idx, bitwidth in enumerate(bit_width_list[:-1]):
                     model.apply(lambda m: setattr(m, 'wbit', bitwidth))
@@ -370,7 +370,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     top1[bw_idx].update(prec1.item(), input.size(0))
                     top5[bw_idx].update(prec5.item(), input.size(0))
                     # Eval slack
-                    slacks[bitwidth][-1] += (criterion_soft(outputs_q, target_soft) - epsilon[bitwidth][-1])*input.size(0)
+                    slacks[bitwidth][-1] += (torch.abs(loss_high-criterion(outputs_q , target)) - epsilon[bitwidth][-1])*input.size(0)
                     # compute activations with High precision model
                     model.apply(lambda m: setattr(m, 'wbit', 32))
                     model.apply(lambda m: setattr(m, 'abit', 32))
