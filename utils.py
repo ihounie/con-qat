@@ -124,7 +124,7 @@ def log_epoch_end(bit_width_list, train_loss, train_prec1, slack_train,
             hist = wandb.Histogram(np_histogram=(lambdas[bw].cpu().numpy(), [float(l) for l in range(len(lambdas[bw])+1)]) )
             wandb.log({prefix+"dual_vars": hist, "epoch":epoch })
             if lambdas is not None:
-                if len(lambdas)>1:
+                if len(lambdas[bw])>1:
                     for l in range(len(lambdas[bw])):
                         wandb.log({prefix+f"dual_{layer_names[l]}_bw_{bw}": lambdas[bw][l].item(), "epoch":epoch })
                 else:
