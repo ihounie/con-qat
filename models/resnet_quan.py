@@ -74,12 +74,7 @@ class PreActBasicBlockQ(nn.Module):
             shortcut = self.skip_conv(out)
             shortcut = self.skip_bn(shortcut)
         else:
-            shortcut = input
-        if self.skip_conv is not None:
-            a = self.skip_conv.quan_a(shortcut)
-            zq_for_const.append(a.detach())#quantized out of shortcut
-        else:
-            zq_for_const.append(shortcut)
+            shortcut = input 
         pre, out = self.conv0(out, pre=True)
         zq_for_hp.append(pre)#quantized input of conv1
         out = self.bn1(out)
@@ -89,6 +84,12 @@ class PreActBasicBlockQ(nn.Module):
         zq_for_hp.append(pre)#quantized input of conv2
         a = self.conv1.quan_a(out)
         zq_for_const.append(a.detach())#quantized out of conv2
+        if self.skip_conv is not None:
+            a = self.skip_conv.quan_a(shortcut)
+        else:
+            a = torch.clip(shortcut, 0.0, 1.0)
+        zq_for_const.append(a.detach())
+
         out += shortcut
         return zq_for_hp, zq_for_const, out
 
@@ -100,9 +101,12 @@ class PreActBasicBlockQ(nn.Module):
         else:
             shortcut = z[0]
         out = self.conv0(z[0])
+        out = torch.clip(out, 0.0, 1.0)
         act.append(out)
         out = self.conv1(z[1])
+        out = torch.clip(out, 0.0, 1.0)
         act.append(out)
+        shortcut = torch.clip(shortcut, 0.0, 1.0)
         act.append(shortcut)
         return act
 
