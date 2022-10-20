@@ -92,7 +92,6 @@ def main(args):
         layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
     layer_names.append("CE")
     model = models.__dict__[args.model](bw_list, test_data.num_classes).cuda()
-    model.bn_to_cuda()
 
     lr_decay = list(map(int, args.lr_decay.split(',')))
     optimizer = get_optimizer_config(model, args.optimizer, args.lr, args.weight_decay)
@@ -159,7 +158,10 @@ def main(args):
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
 
-def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True, optimizer=None, eval_slacks=True, bit_width_list=[8, 32], epsilon=None):
+def forward(data_loader, model, criterion, criterion_soft, epoch, args, training=True,
+             optimizer=None, eval_slacks=True, bit_width_list=None, epsilon=None):
+    if bit_width_list is None:
+        bit_width_list = get_bit_width_list(args)
     # Save state to return model in its initial state
     initial_model_state = model.training
     losses = [AverageMeter() for _ in bit_width_list]
@@ -173,34 +175,34 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
             with torch.no_grad():
                 input = input.cuda()
                 target = target.cuda(non_blocking=True)
-                if eval_slacks:
-                    model.apply(lambda m: setattr(m, 'wbit', 32))
-                model.apply(lambda m: setattr(m, 'abit', 32))
-                model.eval()
-                output = model(input)
-                target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
-                for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
-                    model.apply(lambda m: setattr(m, 'wbit', bw))
-                    model.apply(lambda m: setattr(m, 'abit', bw))
-                    # compute activations with Low precision model
-                    zq_for_hp, zq_for_const, output = model.get_activations(input)
-                    # Log Loss and acc
-                    loss = criterion(output, target)
-                    prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-                    am_l.update(loss.item(), input.size(0))
-                    am_t1.update(prec1.item(), input.size(0))
-                    am_t5.update(prec5.item(), input.size(0))
-                    # compute activations with High precision model
+                if eval_slacks:# VALIDATION
                     model.apply(lambda m: setattr(m, 'wbit', 32))
                     model.apply(lambda m: setattr(m, 'abit', 32))
                     model.eval()
-                    z_full_for_const = model.eval_layers(input, zq_for_hp)
-                    # Log slacks
-                    slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
-                    for l in range(model.get_num_layers()):
-                        slack =  torch.mean(torch.square(zq_for_const[l]-z_full_for_const[l])) - epsilon[bw][l]
-                        slm[l].update(slack.item(), input.size(0))
-                else:
+                    output = model(input)
+                    target_soft = torch.nn.functional.softmax(output.detach(), dim=1)
+                    for bw, am_l, am_t1, am_t5, slm in zip(bit_width_list, losses, top1, top5, slack_meter):
+                        model.apply(lambda m: setattr(m, 'wbit', bw))
+                        model.apply(lambda m: setattr(m, 'abit', bw))
+                        # compute activations with Low precision model
+                        zq_for_hp, zq_for_const, output = model.get_activations(input)
+                        # Log Loss and acc
+                        loss = criterion(output, target)
+                        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+                        am_l.update(loss.item(), input.size(0))
+                        am_t1.update(prec1.item(), input.size(0))
+                        am_t5.update(prec5.item(), input.size(0))
+                        # compute activations with High precision model
+                        model.apply(lambda m: setattr(m, 'wbit', 32))
+                        model.apply(lambda m: setattr(m, 'abit', 32))
+                        model.eval()
+                        z_full_for_const = model.eval_layers(input, zq_for_hp)
+                        # Log slacks
+                        slm[-1].update(criterion_soft(output, target_soft).item(), input.size(0))
+                        for l in range(model.get_num_layers()):
+                            slack =  torch.mean(torch.square(zq_for_const[l]-z_full_for_const[l])) - epsilon[bw][l]
+                            slm[l].update(slack.item(), input.size(0))
+                else: # TEST
                     for bw, am_l, am_t1, am_t5 in zip(bit_width_list, losses, top1, top5):
                         model.apply(lambda m: setattr(m, 'wbit', bw))
                         model.apply(lambda m: setattr(m, 'abit', bw))
@@ -210,7 +212,9 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
                         am_l.update(loss.item(), input.size(0))
                         am_t1.update(prec1.item(), input.size(0))
                         am_t5.update(prec5.item(), input.size(0))
-        else:
+        else: # TRAINING
+            if not model.training:
+                model.train()
             input = input.cuda()
             target = target.cuda(non_blocking=True)
             optimizer.zero_grad()
@@ -220,16 +224,16 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
             loss = criterion(output, target)
             loss.backward()
             # high precision clone to update bn params
-            model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
-            model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
+            model.apply(lambda m: setattr(m, 'wbit', 32))
+            model.apply(lambda m: setattr(m, 'abit', 32))
             model_high = copy.deepcopy(model)
             output_high = model(input)
             loss_high = criterion(output_high, target)
             loss_high.backward()
-            # Copy BN gradients of low precision copy
+            # Copy BN gradients of high precision copy
             # To Main model
             for name, param in model_high.named_parameters():
-                if "bn" in name and str(bit_width_list[-1]) not in name:
+                if "bn" in name and "32" in name:
                     get_param_by_name(model,name).grad = param.grad
             # Update stats BNORM HP
             with torch.no_grad():
