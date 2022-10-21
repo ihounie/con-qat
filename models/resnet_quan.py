@@ -71,8 +71,8 @@ class PreActBasicBlockQ(nn.Module):
         out = self.bn0(input)
         out = self.act0(out)
         if self.skip_conv is not None:
-            a = self.skip_conv(out)
-            shortcut = self.skip_bn(a)
+            s = self.skip_conv(out)
+            shortcut = self.skip_bn(s)
         else:
             shortcut = input 
         pre, out = self.conv0(out, pre=True)
@@ -82,11 +82,11 @@ class PreActBasicBlockQ(nn.Module):
         pre, out = self.conv1(out, pre=True)
         zq_for_const.append(pre)#quantized out of conv1
         zq_for_hp.append(pre)#quantized input of conv2
-        a = self.conv1.quan_a(out)
-        zq_for_const.append(a.detach())#quantized out of conv2
+        c = self.conv1.quan_a(out)
+        zq_for_const.append(c.detach())#quantized out of conv2
         if self.skip_conv is not None:
-            a = self.skip_conv.quan_a(a)#quantized out of shortcut
-            zq_for_const.append(a.detach())
+            s = self.skip_conv.quan_a(s)#quantized out of shortcut
+            zq_for_const.append(s.detach())
         out += shortcut
         return zq_for_hp, zq_for_const, out
 
