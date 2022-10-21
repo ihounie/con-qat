@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .quan_ops import conv2d_quantize_fn, activation_quantize_fn, batchnorm_fn, batchnorm1d_fn
+from .quan_ops import conv2d_quantize_fn, activation_quantize_fn, batchnorm_fn, batchnorm1d_fn, Conv2d_FULL
 
 __all__ = ['resnet20q', 'resnet50q']
 
@@ -27,7 +27,7 @@ class Activate(nn.Module):
 class PreActBasicBlockQ(nn.Module):
     """Pre-activation version of the BasicBlock.
     """
-    def __init__(self, bit_list, in_planes, out_planes, stride=1):
+    def __init__(self, bit_list, in_planes, out_planes, stride=1, block_num = 0):
         super(PreActBasicBlockQ, self).__init__()
         self.bit_list = bit_list
         self.wbit = self.bit_list[-1]
@@ -38,7 +38,10 @@ class PreActBasicBlockQ(nn.Module):
 
         self.bn0 = NormLayer(in_planes)
         self.act0 = Activate(self.bit_list)
-        self.conv0 = Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        if block_num==0 or block_num==7:
+            self.conv0 = Conv2d_FULL(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        else:    
+            self.conv0 = Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = NormLayer(out_planes)
         self.act1 = Activate(self.bit_list)
         self.conv1 = Conv2d(out_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
@@ -278,10 +281,10 @@ class PreActResNetBottleneck(nn.Module):
         self.inplanes = 64
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        self.layer1 = self._make_layer(block, 64, layers[0], block_num = 0)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, block_num = 1)
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, block_num = 2)
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, block_num = 3)
         self.bn = self.norm_layer(512 * block.expansion)
         self.act = Activate(self.bit_list)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
@@ -294,7 +297,7 @@ class PreActResNetBottleneck(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1, block_num=0):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -302,10 +305,10 @@ class PreActResNetBottleneck(nn.Module):
                 self.norm_layer(planes * block.expansion))
 
         layers = []
-        layers.append(block(self.bit_list, self.inplanes, planes, stride, downsample))
+        layers.append(block(self.bit_list, self.inplanes, planes, stride, downsample, block_num = 3*block_num))
         self.inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(self.bit_list, self.inplanes, planes))
+        for i in range(1, blocks):
+            layers.append(block(self.bit_list, self.inplanes, planes, 3*block_num+i))
 
         return nn.Sequential(*layers)
 

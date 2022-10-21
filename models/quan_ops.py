@@ -163,5 +163,15 @@ def linear_quantize_fn(bit_list):
 
     return Linear_Q_
 
+class Conv2d_FULL(nn.Conv2d):
+    def __init__(self, *kargs, **kwargs):
+        super(Conv2d_FULL, self).__init__(*kargs, **kwargs)
+    def forward(self, input, pre=False):
+        if pre:
+            return input, self._conv_forward(input, self.weight, self.bias)
+        else:
+            return self._conv_forward(input, self.weight, self.bias)
+
+
 
 batchnorm_fn = batchnorm2d_fn

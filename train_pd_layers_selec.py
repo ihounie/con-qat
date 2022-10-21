@@ -285,15 +285,21 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
                     for l, (full, q) in enumerate(zip(z_full_for_const, zq_for_const)):
                         slacks[l] = torch.mean(constraint_norm(full-q)) - epsilon[bitwidth][l]
                         slack_meter[j][l].update(slacks[l].item(), input.size(0))
+                        #if l in no_quant_layer_list:
+                            #assert(torch.allclose(act_q[l], act_full[l]))
                 loss += torch.sum(lambdas[bitwidth] * slacks)
             loss.backward()
             # Copy BN gradients of low precision copy
             # To Main model
+            #for name, param in model_q.named_parameters():
+                #if "bn" in name and param.grad is not None:
+                    #get_param_by_name(model,name).grad = param.grad
             for name, param in model_q.named_parameters():
-                if "bn" in name and param.grad is not None:
+                if "bn" in name and str(bit_width_list[-1]) not in name:
                     get_param_by_name(model,name).grad = param.grad
             # GD Step 
             optimizer.step()
+                    
             # Logging and printing
             if i % args.print_freq == 0:
                 logging.info('epoch {0}, iter {1}/{2}'.format(epoch, i, len(data_loader)))
