@@ -290,7 +290,7 @@ def forward(data_loader, model, lambdas, criterion,criterion_soft, epoch, traini
             # Copy BN gradients of low precision copy
             # To Main model
             for name, param in model_q.named_parameters():
-                if "bn" in name and str(bit_width_list[-1]) not in name:
+                if "bn" in name and param.grad is not None:
                     get_param_by_name(model,name).grad = param.grad
             # GD Step 
             optimizer.step()

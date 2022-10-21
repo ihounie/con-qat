@@ -106,16 +106,23 @@ class PreActBasicBlockQ(nn.Module):
         return act
 
     def get_layer(self, l):
-        if l==0:
+        if l=="conv0":
             return self.conv0
-        elif l==1:
+        elif l=="conv1":
             return self.conv1
-        elif l==2:
+        elif l=="shortcut":
             if self.skip_conv is not None:
                 return self.skip_conv
             else:
                 print('No Shortcut Layer on this block')
                 raise
+    def get_bn_layers(self):
+        bn_layers = [self.bn0, self.bn1]
+        if self.skip_conv is not None:
+            bn_layers.append(self.skip_bn)
+        return bn_layers
+
+
 
 class PreActResNet(nn.Module):
     def __init__(self, block, num_units, bit_list, num_classes, expand=5):
@@ -146,6 +153,9 @@ class PreActResNet(nn.Module):
         self.bn_act_norm.append(NormLayer1d(64 * ep, affine=False))
         self.fc = nn.Linear(64 * ep, num_classes)
         self.num_layers = self.get_num_layers()
+        self.name_idx_dict = self.get_name_idx_dict()
+        self.names = self.get_names()
+        self.bn_layers = self.get_bn_layers()
 
     def forward(self, x):
         out = self.conv0(x)
@@ -179,7 +189,9 @@ class PreActResNet(nn.Module):
         return z
     
     def get_layer(self, l):
-        raise NotImplementedError
+        name = self.names[l]
+        num_block = int(name.split("_")[1])
+        return self.layers[num_block].get_layer(name.split("_")[2])
 
     def get_names(self):
         layer_names = []
@@ -197,7 +209,7 @@ class PreActResNet(nn.Module):
         return {name:l for l, name in enumerate(self.get_names())}
     
     def get_idx_from_name(self, name):
-        return self.get_name_idx_dict()[name]
+        return self.name_idx_dict[name]
 
     def norm_act(self,activations):
         norm_act = []
@@ -214,6 +226,13 @@ class PreActResNet(nn.Module):
         num_layers += 2
         # Output Not counted
         return num_layers
+    
+    def get_bn_layers(self):
+        bn_layers = [self.bn]
+        for layer in self.layers:
+            bn_layers.append(layer.get_bn_layers())
+        return bn_layers
+
         
 class PreActBottleneckQ(nn.Module):
     expansion = 4
