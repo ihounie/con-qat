@@ -109,10 +109,7 @@ def main():
     #####################
     model = models.__dict__[args.model](bit_width_list, test_data.num_classes).cuda()
     num_layers = model.get_num_layers()
-    layer_names = []
-    block_l_names = ["conv0", "conv1", "shortcut"]
-    for l in range(num_layers):
-        layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
+    layer_names = model.get_names()
     layer_names.append("CE")
     lr_decay = list(map(int, args.lr_decay.split(',')))
     optimizer = get_optimizer_config(model, args.optimizer, args.lr, args.weight_decay)
@@ -212,7 +209,7 @@ def main():
                      '  val loss {:.2f},   val prec1 {:.2f},   val prec5 {:.2f}'.format(
                          epoch, train_loss[-1], train_prec1[-1], train_prec5[-1], val_loss[-1], val_prec1[-1],
                          val_prec5[-1]))
-    if wandb_log:
+    if args.wandb_log:
         weights_folder = os.path.join(args.results_dir, 'trained_model')
         weights_path = os.path.join(weights_folder, str(wandb.run.id)+'.pt')
         wandb.save(weights_path, policy = 'now')

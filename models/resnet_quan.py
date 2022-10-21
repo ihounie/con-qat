@@ -71,8 +71,8 @@ class PreActBasicBlockQ(nn.Module):
         out = self.bn0(input)
         out = self.act0(out)
         if self.skip_conv is not None:
-            shortcut = self.skip_conv(out)
-            shortcut = self.skip_bn(shortcut)
+            a = self.skip_conv(out)
+            shortcut = self.skip_bn(a)
         else:
             shortcut = input 
         pre, out = self.conv0(out, pre=True)
@@ -85,29 +85,24 @@ class PreActBasicBlockQ(nn.Module):
         a = self.conv1.quan_a(out)
         zq_for_const.append(a.detach())#quantized out of conv2
         if self.skip_conv is not None:
-            a = self.skip_conv.quan_a(shortcut)
-        else:
-            a = torch.clip(shortcut, 0.0, 1.0)
-        zq_for_const.append(a.detach())
-
+            a = self.skip_conv.quan_a(a)#quantized out of shortcut
+            zq_for_const.append(a.detach())
         out += shortcut
         return zq_for_hp, zq_for_const, out
 
     def eval_layers(self, z):
         act = []
         if self.skip_conv is not None:
-            shortcut = self.skip_conv(z[0])
-            shortcut = self.skip_bn(shortcut)
-        else:
-            shortcut = z[0]
+            a = self.skip_conv(z[0])
         out = self.conv0(z[0])
         out = torch.clip(out, 0.0, 1.0)
         act.append(out)
         out = self.conv1(z[1])
         out = torch.clip(out, 0.0, 1.0)
         act.append(out)
-        shortcut = torch.clip(shortcut, 0.0, 1.0)
-        act.append(shortcut)
+        if self.skip_conv is not None:
+            a = torch.clip(a, 0.0, 1.0)
+            act.append(a)
         return act
 
     def get_layer(self, l):
@@ -184,18 +179,18 @@ class PreActResNet(nn.Module):
         return z
     
     def get_layer(self, l):
-        if l<self.num_layers:
-            return self.layers[l//3].get_layer(l%3)
-        elif (self.num_layers-l)==0:
-            return self.bn
-        elif (self.num_layers-l)==1:
-            return self.fc
+        raise NotImplementedError
 
     def get_names(self):
         layer_names = []
         block_l_names = ["conv0", "conv1", "shortcut"]
-        for l in range(self.num_layers):
-            layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
+        l = 0
+        for l in range(27):
+            if l%3 ==2:
+                if l//3 == 3 or l//3==6:
+                    layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
+            else:
+                layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
         return layer_names
     
     def get_name_idx_dict(self):
@@ -210,15 +205,13 @@ class PreActResNet(nn.Module):
             norm_act.append(bn(act))
         return norm_act
 
-    def bn_to_cuda(self):
-        for bn in self.bn_act_norm:
-            bn.cuda()
-
     def get_num_layers(self):
         num_layers = 0 # conv0 doesnt count
         for layer in self.layers:#conv layers
-            # each Layer has three constrainable outputs
-            num_layers +=3
+            # each Layer has two convs
+            num_layers += 2
+        # Two layers have a shortcut conv
+        num_layers += 2
         # Output Not counted
         return num_layers
         
