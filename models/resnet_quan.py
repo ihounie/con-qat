@@ -110,6 +110,18 @@ class PreActBasicBlockQ(nn.Module):
         act.append(shortcut)
         return act
 
+    def get_layer(self, l):
+        if l==0:
+            return self.conv0
+        elif l==1:
+            return self.conv1
+        elif l==2:
+            if self.skip_conv is not None:
+                return self.skip_conv
+            else:
+                print('No Shortcut Layer on this block')
+                raise
+
 class PreActResNet(nn.Module):
     def __init__(self, block, num_units, bit_list, num_classes, expand=5):
         super(PreActResNet, self).__init__()
@@ -138,6 +150,7 @@ class PreActResNet(nn.Module):
         self.bn_act_norm.append(NormLayer(64 * ep, affine=False))
         self.bn_act_norm.append(NormLayer1d(64 * ep, affine=False))
         self.fc = nn.Linear(64 * ep, num_classes)
+        self.num_layers = self.get_num_layers()
 
     def forward(self, x):
         out = self.conv0(x)
@@ -171,10 +184,25 @@ class PreActResNet(nn.Module):
         return z
     
     def get_layer(self, l):
-        if l==0:
-            return self.conv0
-        else: # This will throu an out of index if l= last two layers
-            return self.layers[l-1]
+        if l<self.num_layers:
+            return self.layers[l//3].get_layer(l%3)
+        elif (self.num_layers-l)==0:
+            return self.bn
+        elif (self.num_layers-l)==1:
+            return self.fc
+
+    def get_names(self):
+        layer_names = []
+        block_l_names = ["conv0", "conv1", "shortcut"]
+        for l in range(self.num_layers):
+            layer_names.append(f"Block_{l//3}_{block_l_names[l%3]}")
+        return layer_names
+    
+    def get_name_idx_dict(self):
+        return {name:l for l, name in enumerate(self.get_names())}
+    
+    def get_idx_from_name(self, name):
+        return self.get_name_idx_dict()[name]
 
     def norm_act(self,activations):
         norm_act = []
