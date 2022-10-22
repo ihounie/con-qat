@@ -4,7 +4,7 @@ for seed in 0
 do
 {
     curr_dir="."
-    train_id="BEST2_${BW}_${seed}"
+    train_id="4l_0d_${BW}_${seed}"
     result_dir="./results/$train_id"
     mkdir -p $result_dir
     python -u train_pd_layers_selec.py \
