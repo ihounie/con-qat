@@ -171,6 +171,8 @@ class Conv2d_FULL(nn.Conv2d):
             return input, self._conv_forward(input, self.weight, self.bias)
         else:
             return self._conv_forward(input, self.weight, self.bias)
+    def quan_a(self, x):
+        return x
 
 
 

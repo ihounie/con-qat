@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .quan_ops import conv2d_quantize_fn, activation_quantize_fn, batchnorm_fn, batchnorm1d_fn, Conv2d_FULL
 
-__all__ = ['resnet20q', 'resnet50q']
+__all__ = ['resnet20q']
 
 
 class Activate(nn.Module):
@@ -27,28 +27,34 @@ class Activate(nn.Module):
 class PreActBasicBlockQ(nn.Module):
     """Pre-activation version of the BasicBlock.
     """
-    def __init__(self, bit_list, in_planes, out_planes, stride=1, block_num = 0):
+    def __init__(self, bit_list, in_planes, out_planes, stride=1, block_num = 0, unquantized = []):
         super(PreActBasicBlockQ, self).__init__()
         self.bit_list = bit_list
         self.wbit = self.bit_list[-1]
         self.abit = self.bit_list[-1]
+        self.unquantized = unquantized
 
         Conv2d = conv2d_quantize_fn(self.bit_list)
         NormLayer = batchnorm_fn(self.bit_list)
 
         self.bn0 = NormLayer(in_planes)
         self.act0 = Activate(self.bit_list)
-        if block_num==0 or block_num==7:
+        if "conv0" in unquantized:
             self.conv0 = Conv2d_FULL(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        else:    
+        else:
             self.conv0 = Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = NormLayer(out_planes)
         self.act1 = Activate(self.bit_list)
-        self.conv1 = Conv2d(out_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
-
+        if "conv1" in unquantized:
+            self.conv1 = Conv2d_FULL(out_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        else:
+            self.conv1 = Conv2d(out_planes, out_planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.skip_conv = None
         if stride != 1:
-            self.skip_conv = Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False)
+            if "shortcut" in unquantized:
+                self.skip_conv = Conv2d_FULL(in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False)
+            else:
+                self.skip_conv = Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, padding=0, bias=False)
             self.skip_bn = NormLayer(out_planes)
 
     def forward(self, x):
@@ -128,26 +134,26 @@ class PreActBasicBlockQ(nn.Module):
 
 
 class PreActResNet(nn.Module):
-    def __init__(self, block, num_units, bit_list, num_classes, expand=5):
+    def __init__(self, block, num_units, bit_list, num_classes, expand=5, unquantized = []):
         super(PreActResNet, self).__init__()
         self.bit_list = bit_list
         self.wbit = self.bit_list[-1]
         self.abit = self.bit_list[-1]
         self.expand = expand
         self.bn_act_norm = []
-
         NormLayer = batchnorm_fn(self.bit_list)
         NormLayer1d = batchnorm1d_fn(self.bit_list)
-
         ep = self.expand
         self.conv0 = nn.Conv2d(3, 16 * ep, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn_act_norm.append(NormLayer(16 * ep, affine=False))
         strides = [1] * num_units[0] + [2] + [1] * (num_units[1] - 1) + [2] + [1] * (num_units[2] - 1)
         channels = [16 * ep] * num_units[0] + [32 * ep] * num_units[1] + [64 * ep] * num_units[2]
         in_planes = 16 * ep
+        self.max_layers = 3*len(channels)#If all had shortcut convs
         self.layers = nn.ModuleList()
-        for stride, channel in zip(strides, channels):
-            self.layers.append(block(self.bit_list, in_planes, channel, stride))
+        self.unquantized = self.process_unquantized_list(unquantized)
+        for i, (stride, channel) in enumerate(zip(strides, channels)):
+            self.layers.append(block(self.bit_list, in_planes, channel, stride, unquantized = self.unquantized[i]))
             in_planes = channel
             self.bn_act_norm.append(NormLayer(channel, affine=False))
 
@@ -155,7 +161,6 @@ class PreActResNet(nn.Module):
         self.bn_act_norm.append(NormLayer(64 * ep, affine=False))
         self.bn_act_norm.append(NormLayer1d(64 * ep, affine=False))
         self.fc = nn.Linear(64 * ep, num_classes)
-        self.num_layers = self.get_num_layers()
         self.name_idx_dict = self.get_name_idx_dict()
         self.names = self.get_names()
         self.bn_layers = self.get_bn_layers()
@@ -190,6 +195,12 @@ class PreActResNet(nn.Module):
             idx += 2
             z += out
         return z
+    
+    def process_unquantized_list(self, uq_list):
+        u_q = [[] for _ in range(self.max_layers)]
+        for layer in uq_list:
+            u_q[int(layer.split("_")[1])].append(layer.split("_")[2])
+        return u_q
     
     def get_layer(self, l):
         name = self.names[l]
@@ -236,104 +247,7 @@ class PreActResNet(nn.Module):
             bn_layers.append(layer.get_bn_layers())
         return bn_layers
 
-        
-class PreActBottleneckQ(nn.Module):
-    expansion = 4
-
-    def __init__(self, bit_list, in_planes, out_planes, stride=1, downsample=None):
-        super(PreActBottleneckQ, self).__init__()
-        self.bit_list = bit_list
-        self.wbit = self.bit_list[-1]
-        self.abit = self.bit_list[-1]
-
-        Conv2d = conv2d_quantize_fn(self.bit_list)
-        norm_layer = batchnorm_fn(self.bit_list)
-
-        self.bn0 = norm_layer(in_planes)
-        self.act0 = Activate(self.bit_list)
-        self.conv0 = Conv2d(in_planes, out_planes, kernel_size=1, stride=1, bias=False)
-        self.bn1 = norm_layer(out_planes)
-        self.act1 = Activate(self.bit_list)
-        self.conv1 = Conv2d(out_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = norm_layer(out_planes)
-        self.act2 = Activate(self.bit_list)
-        self.conv2 = Conv2d(out_planes, out_planes * self.expansion, kernel_size=1, stride=1, bias=False)
-        self.downsample = downsample
-
-    def forward(self, x):        
-        shortcut = self.downsample(x) if self.downsample is not None else x
-        out = self.conv0(self.act0(self.bn0(x)))
-        out = self.conv1(self.act1(self.bn1(out)))
-        out = self.conv2(self.act2(self.bn2(out)))
-        out += shortcut
-        return out
-
-
-class PreActResNetBottleneck(nn.Module):
-    def __init__(self, block, layers, bit_list, num_classes):
-        super(PreActResNetBottleneck, self).__init__()
-        self.bit_list = bit_list
-        self.wbit = self.bit_list[-1]
-        self.abit = self.bit_list[-1]
-
-        self.norm_layer = batchnorm_fn(self.bit_list)
-
-        self.inplanes = 64
-        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0], block_num = 0)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, block_num = 1)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, block_num = 2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, block_num = 3)
-        self.bn = self.norm_layer(512 * block.expansion)
-        self.act = Activate(self.bit_list)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-    def _make_layer(self, block, planes, blocks, stride=1, block_num=0):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
-                self.norm_layer(planes * block.expansion))
-
-        layers = []
-        layers.append(block(self.bit_list, self.inplanes, planes, stride, downsample, block_num = 3*block_num))
-        self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.bit_list, self.inplanes, planes, 3*block_num+i))
-
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
-        x = self.act(self.bn(x))
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-
-        return x
-
-
 # For CIFAR10
-def resnet20q(bit_list, num_classes=10):
-    return PreActResNet(PreActBasicBlockQ, [3, 3, 3], bit_list, num_classes=num_classes)
+def resnet20q(bit_list, num_classes=10, unquantized =[]):
+    return PreActResNet(PreActBasicBlockQ, [3, 3, 3], bit_list, num_classes=num_classes, unquantized=unquantized)
 
-
-# For ImageNet
-def resnet50q(bit_list, num_classes=1000):
-    return PreActResNetBottleneck(PreActBottleneckQ, [3, 4, 6, 3], bit_list, num_classes=num_classes)
