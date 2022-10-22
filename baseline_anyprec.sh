@@ -1,13 +1,13 @@
 #!/bin/bash
-BW=8
-for seed in 0 1 2 3 4
+BW=$1
+for seed in 0
 do
 {
     curr_dir="."
-    train_id="anyprec_${BW}"
+    train_id="${BW}_${seed}"
     result_dir="./results/$train_id"
     mkdir -p $result_dir
-    python -u train.py \
+    python -u train_anyprec.py \
         --model resnet20q \
         --dataset cifar10 \
         --train_split train \
@@ -20,7 +20,6 @@ do
         --bit_width_list "${BW},32" \
         --wandb_log \
         --seed "${seed}" \
-        --project Blines \
-        --eval_constraint
+        --project QSAnyprec
 }
 done
