@@ -161,8 +161,9 @@ def main():
         #######################
         print("Evaluating Model...")              
         model.eval()
-        val_loss, val_prec1, val_prec5, slack_val = forward(val_loader, model, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon, eval_slacks=False)
-        test_loss, test_prec1, test_prec5, _ = forward(test_loader, model, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon, eval_slacks=False)
+        eval_slacks = (args.epochs-1)==epoch
+        val_loss, val_prec1, val_prec5, slack_val = forward(val_loader, model, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon, eval_slacks=eval_slacks)
+        test_loss, test_prec1, test_prec5, _ = forward(test_loader, model, criterion, criterion_soft, epoch, False, bit_width_list=bit_width_list,constraint_norm=norm_func,epsilon=epsilon, eval_slacks=eval_slacks)
         if isinstance(lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             lr_scheduler.step(val_loss)
         else:
