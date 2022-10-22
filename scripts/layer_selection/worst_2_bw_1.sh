@@ -2,7 +2,7 @@
             for seed in 0 1 2
             do
                 curr_dir="."
-                train_id="0l_worstd_1_${seed}"
+                train_id="27l_worstd_1_${seed}"
                 result_dir="./results/$train_id"
                 mkdir -p $result_dir
                 python -u train_pd_layers_selec.py \
@@ -16,7 +16,7 @@
                     --weight-decay 0.0 \
                     --results-dir $result_dir \
                     --bit_width_list "1" \
-                    --no_quant_layer "" \
+                    --no_quant_layer "Block_8_conv1,Block_7_conv1" \
                     --seed "${seed}" \
                     --wandb_log \
                     --epsilonlw 0.7 \
