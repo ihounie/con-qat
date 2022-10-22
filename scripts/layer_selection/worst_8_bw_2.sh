@@ -2,7 +2,7 @@
             for seed in 0 1 2
             do
                 curr_dir="."
-                train_id="117l_worstd_2_${seed}"
+                train_id="8l_worstd_2_${seed}"
                 result_dir="./results/$train_id"
                 mkdir -p $result_dir
                 python -u train_pd_layers_selec.py \
