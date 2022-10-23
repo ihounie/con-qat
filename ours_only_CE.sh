@@ -1,11 +1,10 @@
-for BW in 4 2
-do
+BW=$1
     for seed in 0 1 2
     do
-        train_id="${seed}${BW}"
+        train_id="${BW}_${seed}"
         result_dir="./results/$train_id"
         mkdir -p $result_dir
-        python -u train_pd.py \
+        python -u train_pd_layers.py \
             --model resnet20q \
             --dataset cifar10 \
             --train_split train \
@@ -16,10 +15,9 @@ do
             --optimizer adam \
             --weight-decay 0.0 \
             --results-dir $result_dir \
+	    --epsilon_out $2 \
             --bit_width_list "${BW}, 32" \
-            --grads_wrt_high \
             --wandb_log \
-            --project Ours_OnlyCE \
+            --project QS_Ours_OnlyCE \
             --seed ${seed}
     done
-done
