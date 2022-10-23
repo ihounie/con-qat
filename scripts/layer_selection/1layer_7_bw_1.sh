@@ -16,7 +16,7 @@
                     --weight-decay 0.0 \
                     --results-dir $result_dir \
                     --bit_width_list "1" \
-                    --no_quant_layer "['3conv0']" \
+                    --no_quant_layer "['Block_3_conv0']" \
                     --seed "${seed}" \
                     --wandb_log \
                     --epsilonlw 0.7 \
