@@ -1,6 +1,6 @@
 #!/bin/bash
 BW=$1
-for seed in 0
+for seed in 0 1 2
 do
 {
     curr_dir="."
