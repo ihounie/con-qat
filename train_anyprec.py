@@ -51,6 +51,7 @@ parser.add_argument('--wandb_log',  action='store_true')
 parser.add_argument('--project',  default='ConQAT', type=str, help='wandb Project name')
 parser.add_argument('--epsilonlw', default=1/(2**8-1), type = float, help='layer constraint tightness')
 parser.add_argument('--seed', default=42, type=int)
+parser.add_argument('--vanilla',  action='store_true', help='whether to use vanilla QAT')
 
 args = parser.parse_args()
 
@@ -103,7 +104,7 @@ def main():
     ######################
     #   BIT WIDTHs
     ######################
-    bit_width_list = get_bit_width_list(args)
+    bit_width_list = get_bit_width_list(args, vanilla=args.vanilla)
     #####################
     # MODEL and OPT
     #####################
@@ -225,8 +226,8 @@ def forward(data_loader, model, criterion,criterion_soft, epoch, training=True,
             optimizer.zero_grad()
             # compute Full precision forward pass and loss
             # since bitwidth list is sorted in ascending order, the last elem is the highest prec
-            model.apply(lambda m: setattr(m, 'wbit', 32))
-            model.apply(lambda m: setattr(m, 'abit', 32))
+            model.apply(lambda m: setattr(m, 'wbit', bit_width_list[-1]))
+            model.apply(lambda m: setattr(m, 'abit', bit_width_list[-1]))
             out_full = model(input)
             loss = criterion(out_full, target)
             # Evaluate slack

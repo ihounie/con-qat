@@ -100,11 +100,11 @@ def get_param_by_name(module,access_string):
     names = access_string.split(sep='.')
     return reduce(getattr, names, module)
 
-def get_bit_width_list(args):
+def get_bit_width_list(args, vanilla=False):
     bit_width_list = list(map(int, args.bit_width_list.split(',')))
     bit_width_list.sort()
     # Add Full precision if not Passed
-    if 32 not in bit_width_list:
+    if 32 not in bit_width_list and not vanilla:
         bit_width_list += [32]
     return bit_width_list
 
