@@ -1,13 +1,13 @@
 #!/bin/bash
 BW=$1
-for seed in 0 1 2
+for seed in 3 4 5
 do
 {
     curr_dir="."
     train_id="${BW}_${seed}"
     result_dir="./results/$train_id"
     mkdir -p $result_dir
-    python -u train_anyprec.py \
+    python -u train_vanilla.py \
         --model resnet20q \
         --dataset cifar10 \
         --train_split train \
