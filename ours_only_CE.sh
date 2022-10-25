@@ -1,5 +1,6 @@
 BW=$1
-    for seed in 0 1 2
+EPSILON=$2
+    for seed in 3 4 5
     do
         train_id="${BW}_${seed}"
         result_dir="./results/$train_id"
