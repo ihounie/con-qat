@@ -1,6 +1,6 @@
 #!/bin/bash
 BW=$1
-for seed in 3 4 5
+for seed in 6 7 8 9
 do
 {
     curr_dir="."
@@ -18,7 +18,6 @@ do
         --weight-decay 0.0 \
         --results-dir $result_dir \
         --bit_width_list "${BW},32" \
-        --wandb_log \
         --seed "${seed}" \
         --project QSVanilla \
         --vanilla

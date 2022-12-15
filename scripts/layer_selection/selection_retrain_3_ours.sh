@@ -4,7 +4,7 @@ for seed in 0 1 2
 do
 {
     curr_dir="."
-    train_id="L2_5l_bw_${BW}"
+    train_id="OURS_3l_bw_${BW}"
     result_dir="./results/$train_id"
     mkdir -p $result_dir
     python -u train_selec.py \
@@ -18,9 +18,8 @@ do
         --weight-decay 0.0 \
         --results-dir $result_dir \
         --bit_width_list "${BW}" \
-        --no_quant_layer "9, 8, 6, 7, 5" \
+        --no_quant_layer "7, 8, 4" \
         --seed "${seed}" \
-        --wandb_log \
         --project LayerRetrain \
         --eval_constraint
 }

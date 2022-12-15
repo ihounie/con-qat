@@ -281,9 +281,9 @@ def forward(data_loader, model, criterion, criterion_soft, epoch, args, training
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Training')
     parser.add_argument('--results-dir', default='./results', help='results dir')   
-    parser.add_argument('--dataset', default='imagenet', help='dataset name or folder')
+    parser.add_argument('--dataset', default='cifar10', help='dataset name or folder')
     parser.add_argument('--train_split', default='train', help='train split name')
-    parser.add_argument('--model', default='resnet18', help='model architecture')
+    parser.add_argument('--model', default='resnet20q', help='model architecture')
     parser.add_argument('--workers', default=0, type=int, help='number of data loading workers')
     parser.add_argument('--epochs', default=200, type=int, help='number of epochs')
     parser.add_argument('--start-epoch', default=0, type=int, help='manual epoch number')

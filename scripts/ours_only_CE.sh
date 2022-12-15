@@ -1,11 +1,8 @@
-
-BW=2
-EPSILONOUT2=0.7
-for seed in 0 1 2
-do
-    for EPSILONLW in 0.99999 1.5 
+BW=$1
+EPSILON=$2
+    for seed in 3 4 5
     do
-        train_id="${BW}_${EPSILONLW}_${seed}"
+        train_id="${BW}_${seed}"
         result_dir="./results/$train_id"
         mkdir -p $result_dir
         python -u train_pd_layers.py \
@@ -19,13 +16,8 @@ do
             --optimizer adam \
             --weight-decay 0.0 \
             --results-dir $result_dir \
+	    --epsilon_out $2 \
             --bit_width_list "${BW}, 32" \
-            --wandb_log \
-            --epsilonlw $EPSILONLW \
-            --layerwise_constraint \
-            --constraint_norm L2 \
-            --epsilon_out $EPSILONOUT2 \
-            --project QS_L2AblEps_CEconstraint \
+            --project QS_Ours_OnlyCE \
             --seed ${seed}
     done
-done

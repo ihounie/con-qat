@@ -164,6 +164,9 @@ def main():
     criterion_soft = CrossEntropyLossSoft().cuda()#Unused
     sum_writer = SummaryWriter(args.results_dir + '/summary')   
     num_layers = model.get_num_layers()
+    print("*"*20)
+    print("Number of intermediate outputs Evaluated: ", num_layers)
+    print("*"*20)
     #########################
     # EPSILON and DUAL INIT
     ########################
